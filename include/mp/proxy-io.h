@@ -129,6 +129,28 @@ std::string LongThreadName(const char* exe_name);
 
 //! Event loop implementation.
 //!
+//! Cap'n Proto threading model is very simple: all I/O operations are
+//! asynchronous and must be performed on a single thread. This includes:
+//!
+//! - Code starting an asynchronous operation (calling a function that returns a
+//!   promise object)
+//! - Code notifying that an asynchronous operation is complete (code using a
+//!   fulfiller object)
+//! - Code handling a completed operation (code chaining or waiting for a promise)
+//!
+//! All of this code needs to access shared state, and there is no mutex that
+//! can be acquired to lock this state because Cap'n Proto
+//! assumes it will only be accessed from one thread. So all this code needs to
+//! actually run on one thread, and the EventLoop::loop() method is the entry point for
+//! this thread. ProxyClient and ProxyServer objects that use other threads and
+//! need to perform I/O operations post to this thread using EventLoop::post()
+//! and EventLoop::sync() methods.
+//!
+//! Specifically, because ProxyClient methods can be called from arbitrary
+//! threads, and ProxyServer methods can run on arbitrary threads, ProxyClient
+//! methods use the EventLoop thread to send requests, and ProxyServer methods
+//! use the thread to return results.
+//!
 //! Based on https://groups.google.com/d/msg/capnproto/TuQFF1eH2-M/g81sHaTAAQAJ
 class EventLoop
 {
