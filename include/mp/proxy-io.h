@@ -446,7 +446,7 @@ ProxyClientBase<Interface, Impl>::ProxyClientBase(typename Interface::Client cli
         Sub::destroy(*this);
 
         // FIXME: Could just invoke removed addCleanup fn here instead of duplicating code
-        m_context.connection->m_loop.sync([&]() {
+        m_context.loop->sync([&]() {
             // Release client capability by move-assigning to temporary.
             {
                 typename Interface::Client(std::move(m_client));
