@@ -72,7 +72,7 @@ public:
 struct ProxyContext
 {
     Connection* connection;
-    EventLoop* loop;
+    EventLoopRef loop;
     CleanupList cleanup_fns;
 
     ProxyContext(Connection* connection);
