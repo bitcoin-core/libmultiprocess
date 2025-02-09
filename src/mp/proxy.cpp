@@ -65,6 +65,8 @@ bool EventLoopRef::reset()
     return done;
 }
 
+ProxyContext::ProxyContext(Connection* connection) : connection(connection), loop{&connection->m_loop} {}
+
 Connection::~Connection()
 {
     // Shut down RPC system first, since this will garbage collect Server
