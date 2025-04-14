@@ -73,14 +73,29 @@ function(target_capnp_sources target include_prefix)
   endif()
 
   get_property(mp_include_dir GLOBAL PROPERTY MP_INCLUDE_DIR)
+  get_property(mp_no_generate GLOBAL PROPERTY MP_NO_GENERATE)
   set(generated_headers "")
   foreach(capnp_file IN LISTS TCS_UNPARSED_ARGUMENTS)
-    add_custom_command(
-      OUTPUT ${capnp_file}.c++ ${capnp_file}.h ${capnp_file}.proxy-client.c++ ${capnp_file}.proxy-types.h ${capnp_file}.proxy-server.c++ ${capnp_file}.proxy-types.c++ ${capnp_file}.proxy.h
-      COMMAND ${MPGEN_BINARY} ${CMAKE_CURRENT_SOURCE_DIR} ${include_prefix} ${CMAKE_CURRENT_SOURCE_DIR}/${capnp_file} ${TCS_IMPORT_PATHS} ${mp_include_dir}
-      DEPENDS ${capnp_file}
-      VERBATIM
-    )
+    set(output_files ${capnp_file}.c++ ${capnp_file}.h ${capnp_file}.proxy-client.c++ ${capnp_file}.proxy-types.h ${capnp_file}.proxy-server.c++ ${capnp_file}.proxy-types.c++ ${capnp_file}.proxy.h)
+    if (mp_no_generate)
+      add_custom_command(
+        OUTPUT ${output_files}
+        COMMAND ${CMAKE_COMMAND} -E echo ""
+        COMMAND ${CMAKE_COMMAND} -E echo "ERROR: Cannot run cross-compiled ${MPGEN_BINARY} code generator on this system."
+        COMMAND ${CMAKE_COMMAND} -E echo "Please specify path to a native mpgen tool with MPGEN_EXECUTABLE option."
+        COMMAND ${CMAKE_COMMAND} -E echo ""
+        COMMAND ${CMAKE_COMMAND} -E false
+        VERBATIM
+      )
+    else()
+      add_custom_command(
+        OUTPUT ${output_files}
+        COMMAND ${MPGEN_BINARY} ${CMAKE_CURRENT_SOURCE_DIR} ${include_prefix} ${CMAKE_CURRENT_SOURCE_DIR}/${capnp_file} ${TCS_IMPORT_PATHS} ${mp_include_dir}
+        DEPENDS ${capnp_file}
+        VERBATIM
+      )
+    endif()
+
     target_sources(${target} PRIVATE
       ${CMAKE_CURRENT_BINARY_DIR}/${capnp_file}.c++
       ${CMAKE_CURRENT_BINARY_DIR}/${capnp_file}.proxy-client.c++
