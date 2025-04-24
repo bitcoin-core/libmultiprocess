@@ -35,7 +35,7 @@ namespace test {
  * object destroys the client Connection object. Normally it makes sense for
  * this to be true to simplify shutdown and avoid needing to call
  * client_disconnect manually, but false allows testing more ProxyClient
- * behavior and the "clientInvoke call made after disconnect" code path.
+ * behavior and the "IPC client method called after disconnect" code path.
  */
 class TestSetup
 {
@@ -191,8 +191,8 @@ KJ_TEST("Call IPC method after client connection is closed")
     bool disconnected{false};
     try {
         foo->add(1, 2);
-    } catch (const std::logic_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "clientInvoke call made after disconnect");
+    } catch (const std::runtime_error& e) {
+        KJ_EXPECT(std::string_view{e.what()} == "IPC client method called after disconnect.");
         disconnected = true;
     }
     KJ_EXPECT(disconnected);
@@ -209,9 +209,7 @@ KJ_TEST("Calling IPC method after server connection is closed")
     try {
         foo->add(1, 2);
     } catch (const std::runtime_error& e) {
-        std::string_view error{e.what()};
-        KJ_EXPECT(error.starts_with("kj::Exception: "));
-        KJ_EXPECT(error.find("disconnected: Peer disconnected.") != std::string_view::npos);
+        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
         disconnected = true;
     }
     KJ_EXPECT(disconnected);
