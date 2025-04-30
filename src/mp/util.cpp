@@ -15,7 +15,7 @@
 #include <pthread.h>
 #include <sstream>
 #include <string>
-#include <sys/types.h>
+#include <fcntl.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -156,6 +156,16 @@ std::tuple<ProcessId, SocketId> SpawnProcess(ConnectInfoToArgsFn&& connect_info_
             if (fd != fds[0]) {
                 close(fd);
             }
+        }
+
+        // Explicitly clear FD_CLOEXEC on the child's socket before calling
+        // exec, so the fd survives into the spawned process regardless of how
+        // the socket was created.
+        int flags = fcntl(fds[0], F_GETFD);
+        if (flags == -1) throw std::system_error(errno, std::system_category(), "fcntl F_GETFD");
+        if (flags & FD_CLOEXEC) {
+            flags &= ~FD_CLOEXEC;
+            if (fcntl(fds[0], F_SETFD, flags) == -1) throw std::system_error(errno, std::system_category(), "fcntl F_SETFD");
         }
 
         execvp(argv[0], argv.data());
