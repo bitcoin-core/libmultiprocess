@@ -214,6 +214,9 @@ std::string LongThreadName(const char* exe_name);
 inline SocketId StreamSocketId(const Stream& stream)
 {
     if (stream) KJ_IF_MAYBE(fd, stream->getFd()) return *fd;
+#ifdef WIN32
+    if (stream) KJ_IF_MAYBE(handle, stream->getWin32Handle()) return reinterpret_cast<SocketId>(*handle);
+#endif
     throw std::logic_error("Stream socket unset");
 }
 
