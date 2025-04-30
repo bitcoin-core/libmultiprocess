@@ -11,6 +11,7 @@
 #include <functional>
 #include <iostream>
 #include <kj/async.h>
+#include <kj/async-io.h>
 #include <kj/common.h>
 #include <kj/memory.h>
 #include <memory>
@@ -53,7 +54,8 @@ int main(int argc, char** argv)
     mp::SocketId socket{mp::StartSpawned(argv[1])};
     mp::EventLoop loop("mpcalculator", LogPrint);
     std::unique_ptr<Init> init = std::make_unique<InitImpl>();
-    mp::ServeStream<InitInterface>(loop, socket, *init);
+    mp::Stream stream{loop.m_io_context.lowLevelProvider->wrapSocketFd(socket, kj::LowLevelAsyncIoProvider::TAKE_OWNERSHIP)};
+    mp::ServeStream<InitInterface>(loop, kj::mv(stream), *init);
     loop.loop();
     return 0;
 }

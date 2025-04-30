@@ -211,6 +211,12 @@ private:
 
 std::string LongThreadName(const char* exe_name);
 
+inline SocketId StreamSocketId(const Stream& stream)
+{
+    if (stream) KJ_IF_MAYBE(fd, stream->getFd()) return *fd;
+    throw std::logic_error("Stream socket unset");
+}
+
 //! Event loop implementation.
 //!
 //! Cap'n Proto threading model is very simple: all I/O operations are
@@ -795,17 +801,15 @@ kj::Promise<T> ProxyServer<Thread>::post(Fn&& fn)
     return ret;
 }
 
-//! Given stream file descriptor, make a new ProxyClient object to send requests
-//! over the stream. Also create a new Connection object embedded in the
-//! client that is freed when the client is closed.
+//! Given a stream, make a new ProxyClient object to send requests over it.
+//! Also create a new Connection object embedded in the client that is freed
+//! when the client is closed.
 template <typename InitInterface>
-std::unique_ptr<ProxyClient<InitInterface>> ConnectStream(EventLoop& loop, int fd)
+std::unique_ptr<ProxyClient<InitInterface>> ConnectStream(EventLoop& loop, kj::Own<kj::AsyncIoStream> stream)
 {
     typename InitInterface::Client init_client(nullptr);
     std::unique_ptr<Connection> connection;
     loop.sync([&] {
-        auto stream =
-            loop.m_io_context.lowLevelProvider->wrapSocketFd(fd, kj::LowLevelAsyncIoProvider::TAKE_OWNERSHIP);
         connection = std::make_unique<Connection>(loop, kj::mv(stream));
         init_client = connection->m_rpc_system->bootstrap(ServerVatId().vat_id).castAs<InitInterface>();
         Connection* connection_ptr = connection.get();
@@ -853,13 +857,12 @@ void _Listen(EventLoop& loop, kj::Own<kj::ConnectionReceiver>&& listener, InitIm
         }));
 }
 
-//! Given stream file descriptor and an init object, handle requests on the
-//! stream by calling methods on the Init object.
+//! Given a stream and an init object, handle requests on the stream by calling
+//! methods on the Init object.
 template <typename InitInterface, typename InitImpl>
-void ServeStream(EventLoop& loop, int fd, InitImpl& init)
+void ServeStream(EventLoop& loop, kj::Own<kj::AsyncIoStream> stream, InitImpl& init)
 {
-    _Serve<InitInterface>(
-        loop, loop.m_io_context.lowLevelProvider->wrapSocketFd(fd, kj::LowLevelAsyncIoProvider::TAKE_OWNERSHIP), init);
+    _Serve<InitInterface>(loop, kj::mv(stream), init);
 }
 
 //! Given listening socket file descriptor and an init object, handle incoming

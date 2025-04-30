@@ -11,7 +11,9 @@
 #include <future>
 #include <iostream>
 #include <kj/async.h>
+#include <kj/async-io.h>
 #include <kj/common.h>
+#include <kj/memory.h>
 #include <memory>
 #include <mp/proxy-io.h>
 #include <mp/util.h>
@@ -32,7 +34,7 @@ static auto Spawn(mp::EventLoop& loop, const std::string& process_argv0, const s
         path.append(new_exe_name);
         return {path.string(), std::move(info)};
     });
-    return std::make_tuple(mp::ConnectStream<InitInterface>(loop, socket), pid);
+    return std::make_tuple(mp::ConnectStream<InitInterface>(loop, loop.m_io_context.lowLevelProvider->wrapSocketFd(socket)), pid);
 }
 
 static void LogPrint(mp::LogMessage log_data)
