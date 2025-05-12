@@ -634,7 +634,10 @@ void ListenConnections(EventLoop& loop, int fd, InitImpl& init)
     });
 }
 
-extern thread_local ThreadContext g_thread_context;
+extern thread_local ThreadContext g_thread_context; // NOLINT(bitcoin-nontrivial-threadlocal)
+// Silence nonstandard bitcoin tidy error "Variable with non-trivial destructor
+// cannot be thread_local" which should not be a problem on modern platforms, and
+// could lead to a small memory leak at worst on older ones.
 
 } // namespace mp
 
