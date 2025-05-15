@@ -385,7 +385,7 @@ struct ClientException
 template <typename Accessor, typename... Types>
 struct ClientParam
 {
-    ClientParam(Types&&... values) : m_values(values...) {}
+    ClientParam(Types&&... values) : m_values{std::forward<Types>(values)...} {}
 
     struct BuildParams : IterateFieldsHelper<BuildParams, sizeof...(Types)>
     {
@@ -399,7 +399,14 @@ struct ClientParam
                     ParamList(), Priority<1>(), std::forward<Values>(values)..., Make<StructField, Accessor>(params));
             };
 
-            std::apply(fun, m_client_param->m_values);
+            // Note: The m_values tuple just consists of lvalue and rvalue
+            // references, so calling std::move doesn't change the tuple, it
+            // just causes std::apply to call the std::get overload that returns
+            // && instead of &, so rvalue references are preserved and not
+            // turned into lvalue references. This allows the BuildField call to
+            // move from the argument if it is an rvalue reference or was passed
+            // by value.
+            std::apply(fun, std::move(m_client_param->m_values));
         }
 
         BuildParams(ClientParam* client_param) : m_client_param(client_param) {}
@@ -577,7 +584,7 @@ void serverDestroy(Server& server)
 //!
 //! ProxyClient<ClassName>::M0::Result ProxyClient<ClassName>::methodName(M0::Param<0> arg0, M0::Param<1> arg1) {
 //!     typename M0::Result result;
-//!     clientInvoke(*this, &InterfaceName::Client::methodNameRequest, MakeClientParam<...>(arg0), MakeClientParam<...>(arg1), MakeClientParam<...>(result));
+//!     clientInvoke(*this, &InterfaceName::Client::methodNameRequest, MakeClientParam<...>(M0::Fwd<0>(arg0)), MakeClientParam<...>(M0::Fwd<1>(arg1)), MakeClientParam<...>(result));
 //!     return result;
 //! }
 //!
