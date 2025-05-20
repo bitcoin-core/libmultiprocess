@@ -512,10 +512,20 @@ static void Generate(kj::StringPtr src_prefix,
 
                     add_accessor(field_name);
 
+                    std::ostringstream fwd_args;
                     for (int i = 0; i < field.args; ++i) {
                         if (argc > 0) client_args << ",";
+
+                        // Add to client method parameter list.
                         client_args << "M" << method_ordinal << "::Param<" << argc << "> " << field_name;
                         if (field.args > 1) client_args << i;
+
+                        // Add to MakeClientParam argument list using Fwd helper for perfect forwarding.
+                        if (i > 0) fwd_args << ", ";
+                        fwd_args << "M" << method_ordinal << "::Fwd<" << argc << ">(" << field_name;
+                        if (field.args > 1) fwd_args << i;
+                        fwd_args << ")";
+
                         ++argc;
                     }
                     client_invoke << ", ";
@@ -529,13 +539,10 @@ static void Generate(kj::StringPtr src_prefix,
                     client_invoke << "Accessor<" << base_name << "_fields::" << Cap(field_name) << ", "
                                   << field_flags.str() << ">>(";
 
-                    if (field.retval || field.args == 1) {
+                    if (field.retval) {
                         client_invoke << field_name;
                     } else {
-                        for (int i = 0; i < field.args; ++i) {
-                            if (i > 0) client_invoke << ", ";
-                            client_invoke << field_name << i;
-                        }
+                        client_invoke << fwd_args.str();
                     }
                     client_invoke << ")";
 
