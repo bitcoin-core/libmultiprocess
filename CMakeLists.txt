@@ -35,6 +35,17 @@ include(GNUInstallDirs)
 # to avoid "error: Import failed: /mp/proxy.capnp" failures from capnproto.
 set_property(GLOBAL PROPERTY MP_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
+# Set MP_NO_GENERATE as a global property if cross compiling and
+# MPGEN_EXECUTABLE not set and cross compiled executables can not run. This
+# should trigger a more readable attempting to run a cross compiled executable.
+if(CMAKE_CROSSCOMPILING AND NOT MPGEN_EXECUTABLE)
+  include(CheckCXXSourceRuns)
+  check_cxx_source_runs("int main() { return 0; }" EXECUTABLES_CAN_RUN)
+  if(NOT EXECUTABLES_CAN_RUN)
+    set_property(GLOBAL PROPERTY MP_NO_GENERATE TRUE)
+  endif()
+endif()
+
 # Set a convenience variable for subdirectories.
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(MP_STANDALONE TRUE)
