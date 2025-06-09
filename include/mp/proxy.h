@@ -89,6 +89,15 @@ public:
     using Sub = ProxyClient<Interface>;
     using Super = ProxyClientBase<Interface, Impl>;
 
+    //! Construct libmultiprocess client object wrapping Cap'n Proto client
+    //! object with a reference to the associated mp::Connection object.
+    //!
+    //! The destroy_connection option determines whether destroying this client
+    //! object closes the connection. It is set to true for the
+    //! ProxyClient<InitInterface> object returned by ConnectStream, to let IPC
+    //! clients close the connection by freeing the object. It is false for
+    //! other client objects so they can be destroyed without affecting the
+    //! connection.
     ProxyClientBase(typename Interface::Client client, Connection* connection, bool destroy_connection);
     ~ProxyClientBase() noexcept;
 
