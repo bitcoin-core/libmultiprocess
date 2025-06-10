@@ -218,7 +218,7 @@ public:
     kj::Function<void()>* m_post_fn MP_GUARDED_BY(m_mutex) = nullptr;
 
     //! Callback functions to run on async thread.
-    CleanupList m_async_fns MP_GUARDED_BY(m_mutex);
+    std::optional<CleanupList> m_async_fns MP_GUARDED_BY(m_mutex);
 
     //! Pipe read handle used to wake up the event loop thread.
     int m_wait_fd = -1;

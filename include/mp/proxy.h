@@ -62,7 +62,7 @@ public:
     ~EventLoopRef() { reset(); }
     EventLoop& operator*() const { assert(m_loop); return *m_loop; }
     EventLoop* operator->() const { assert(m_loop); return m_loop; }
-    bool reset();
+    void reset(bool relock=false);
 
     EventLoop* m_loop{nullptr};
     Lock* m_lock{nullptr};

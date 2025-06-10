@@ -56,27 +56,26 @@ EventLoopRef::EventLoopRef(EventLoop& loop, Lock* lock) : m_loop(&loop), m_lock(
     m_loop->m_num_clients += 1;
 }
 
-bool EventLoopRef::reset()
+void EventLoopRef::reset(bool relock)
 {
-    bool done = false;
     if (m_loop) {
         auto loop_lock{PtrOrValue{m_lock, m_loop->m_mutex}};
         loop_lock->assert_locked(m_loop->m_mutex);
         assert(m_loop->m_num_clients > 0);
         m_loop->m_num_clients -= 1;
         if (m_loop->done()) {
-            done = true;
             m_loop->m_cv.notify_all();
             int post_fd{m_loop->m_post_fd};
             loop_lock->unlock();
             char buffer = 0;
             KJ_SYSCALL(write(post_fd, &buffer, 1)); // NOLINT(bugprone-suspicious-semicolon)
-            // Do not try to relock `loop_lock` after writing, because the event loop
-            // could wake up and destroy itself and the mutex might no longer exist.
+            // By default, do not try to relock `loop_lock` after writing,
+            // because the event loop could wake up and destroy itself and the
+            // mutex might no longer exist.
+            if (relock) loop_lock->lock();
         }
         m_loop = nullptr;
     }
-    return done;
 }
 
 ProxyContext::ProxyContext(Connection* connection) : connection(connection), loop{*connection->m_loop} {}
@@ -137,7 +136,7 @@ Connection::~Connection()
     }
     while (!m_async_cleanup_fns.empty()) {
         const Lock lock(m_loop->m_mutex);
-        m_loop->m_async_fns.emplace_back(std::move(m_async_cleanup_fns.front()));
+        m_loop->m_async_fns->emplace_back(std::move(m_async_cleanup_fns.front()));
         m_async_cleanup_fns.pop_front();
     }
     Lock lock(m_loop->m_mutex);
@@ -204,7 +203,7 @@ EventLoop::~EventLoop()
     if (m_async_thread.joinable()) m_async_thread.join();
     const Lock lock(m_mutex);
     KJ_ASSERT(m_post_fn == nullptr);
-    KJ_ASSERT(m_async_fns.empty());
+    KJ_ASSERT(!m_async_fns);
     KJ_ASSERT(m_wait_fd == -1);
     KJ_ASSERT(m_post_fd == -1);
     KJ_ASSERT(m_num_clients == 0);
@@ -219,6 +218,12 @@ void EventLoop::loop()
     assert(!g_thread_context.loop_thread);
     g_thread_context.loop_thread = true;
     KJ_DEFER(g_thread_context.loop_thread = false);
+
+    {
+        const Lock lock(m_mutex);
+        assert(!m_async_fns);
+        m_async_fns.emplace();
+    }
 
     kj::Own<kj::AsyncIoStream> wait_stream{
         m_io_context.lowLevelProvider->wrapSocketFd(m_wait_fd, kj::LowLevelAsyncIoProvider::TAKE_OWNERSHIP)};
@@ -248,6 +253,8 @@ void EventLoop::loop()
     const Lock lock(m_mutex);
     m_wait_fd = -1;
     m_post_fd = -1;
+    m_async_fns.reset();
+    m_cv.notify_all();
 }
 
 void EventLoop::post(kj::Function<void()> fn)
@@ -270,24 +277,21 @@ void EventLoop::post(kj::Function<void()> fn)
 
 void EventLoop::startAsyncThread()
 {
+    assert (std::this_thread::get_id() == m_thread_id);
     if (m_async_thread.joinable()) {
         // Notify to wake up the async thread if it is already running.
         m_cv.notify_all();
-    } else if (!m_async_fns.empty()) {
+    } else if (!m_async_fns->empty()) {
         m_async_thread = std::thread([this] {
             Lock lock(m_mutex);
-            while (!done()) {
-                if (!m_async_fns.empty()) {
+            while (m_async_fns) {
+                if (!m_async_fns->empty()) {
                     EventLoopRef ref{*this, &lock};
-                    const std::function<void()> fn = std::move(m_async_fns.front());
-                    m_async_fns.pop_front();
+                    const std::function<void()> fn = std::move(m_async_fns->front());
+                    m_async_fns->pop_front();
                     Unlock(lock, fn);
-                    // Reset ref and break if that returns true instead of
-                    // passively letting ref go out of scope. This is important
-                    // because the ref destructor would leave m_mutex unlocked
-                    // when done() returns true, causing undefined behavior if
-                    // the loop continued to execute.
-                    if (ref.reset()) break;
+                    // Important to relock because of the wait() call below.
+                    ref.reset(/*relock=*/true);
                     // Continue without waiting in case there are more async_fns
                     continue;
                 }
@@ -300,7 +304,7 @@ void EventLoop::startAsyncThread()
 bool EventLoop::done() const
 {
     assert(m_num_clients >= 0);
-    return m_num_clients == 0 && m_async_fns.empty();
+    return m_num_clients == 0 && m_async_fns->empty();
 }
 
 std::tuple<ConnThread, bool> SetThread(ConnThreads& threads, std::mutex& mutex, Connection* connection, const std::function<Thread::Client()>& make_thread)
