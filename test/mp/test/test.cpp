@@ -45,6 +45,7 @@ public:
     std::function<void()> client_disconnect;
     std::promise<std::unique_ptr<ProxyClient<messages::FooInterface>>> client_promise;
     std::unique_ptr<ProxyClient<messages::FooInterface>> client;
+    ProxyServer<messages::FooInterface>* server{nullptr};
 
     TestSetup(bool client_owns_connection = true)
         : thread{[&] {
@@ -58,6 +59,7 @@ public:
                   std::make_unique<Connection>(loop, kj::mv(pipe.ends[0]), [&](Connection& connection) {
                       auto server_proxy = kj::heap<ProxyServer<messages::FooInterface>>(
                           std::make_shared<FooImplementation>(), connection);
+                      server = server_proxy;
                       return capnp::Capability::Client(kj::mv(server_proxy));
                   });
               server_disconnect = [&] { loop.sync([&] { server_connection.reset(); }); };
@@ -213,6 +215,70 @@ KJ_TEST("Calling IPC method after server connection is closed")
         disconnected = true;
     }
     KJ_EXPECT(disconnected);
+}
+
+KJ_TEST("Calling IPC method and disconnecting during the call")
+{
+    TestSetup setup{/*client_owns_connection=*/false};
+    ProxyClient<messages::FooInterface>* foo = setup.client.get();
+    KJ_EXPECT(foo->add(1, 2) == 3);
+
+    // Set m_fn to initiate client disconnect when server is in the middle of
+    // handling the callFn call to make sure this case is handled cleanly.
+    setup.server->m_impl->m_fn = setup.client_disconnect;
+
+    bool disconnected{false};
+    try {
+        foo->callFn();
+    } catch (const std::runtime_error& e) {
+        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
+        disconnected = true;
+    }
+    KJ_EXPECT(disconnected);
+}
+
+KJ_TEST("Calling IPC method, disconnecting and blocking during the call")
+{
+    // This test is similar to last test, except that instead of letting the IPC
+    // call return immediately after triggering a disconnect, make it disconnect
+    // & wait so server is forced to deal with having a disconnection and call
+    // in flight at the same time.
+    //
+    // Test uses callFnAsync() instead of callFn() to implement this. Both of
+    // these methods have the same implementation, but the callFnAsync() capnp
+    // method declaration takes an mp.Context argument so the method executes on
+    // an asynchronous thread instead of executing in the event loop thread, so
+    // it is able to block without deadlocking the event lock thread.
+    //
+    // This test adds important coverage because it causes the server Connection
+    // object to be destroyed before ProxyServer object, which is not a
+    // condition that usually happens because the m_rpc_system.reset() call in
+    // the ~Connection destructor usually would immediately free all remaing
+    // ProxyServer objects associated with the connection. Having an in-progress
+    // RPC call requires keeping the ProxyServer longer.
+
+    TestSetup setup{/*client_owns_connection=*/false};
+    ProxyClient<messages::FooInterface>* foo = setup.client.get();
+    KJ_EXPECT(foo->add(1, 2) == 3);
+
+    foo->initThreadMap();
+    std::promise<void> signal;
+    setup.server->m_impl->m_fn = [&] {
+        EventLoopRef loop{*setup.server->m_context.loop};
+        setup.client_disconnect();
+        signal.get_future().get();
+    };
+
+    bool disconnected{false};
+    try {
+        foo->callFnAsync();
+    } catch (const std::runtime_error& e) {
+        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
+        disconnected = true;
+    }
+    KJ_EXPECT(disconnected);
+
+    signal.set_value();
 }
 
 } // namespace test
