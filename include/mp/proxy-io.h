@@ -178,6 +178,10 @@ public:
         post(std::forward<Callable>(callable));
     }
 
+    //! Register cleanup function to run on asynchronous worker thread without
+    //! blocking the event loop thread.
+    void addAsyncCleanup(std::function<void()> fn);
+
     //! Start asynchronous worker thread if necessary. This is only done if
     //! there are ProxyServerBase::m_impl objects that need to be destroyed
     //! asynchronously, without tying up the event loop thread. This can happen
@@ -329,10 +333,6 @@ public:
     CleanupIt addSyncCleanup(std::function<void()> fn);
     void removeSyncCleanup(CleanupIt it);
 
-    //! Register asynchronous cleanup function to run on worker thread when
-    //! disconnect() is called.
-    void addAsyncCleanup(std::function<void()> fn);
-
     //! Add disconnect handler.
     template <typename F>
     void onDisconnect(F&& f)
@@ -361,11 +361,10 @@ public:
     //! ThreadMap.makeThread) used to service requests to clients.
     ::capnp::CapabilityServerSet<Thread> m_threads;
 
-    //! Cleanup functions to run if connection is broken unexpectedly.
-    //! Lists will be empty if all ProxyClient and ProxyServer objects are
-    //! destroyed cleanly before the connection is destroyed.
+    //! Cleanup functions to run if connection is broken unexpectedly.  List
+    //! will be empty if all ProxyClient are destroyed cleanly before the
+    //! connection is destroyed.
     CleanupList m_sync_cleanup_fns;
-    CleanupList m_async_cleanup_fns;
 };
 
 //! Vat id for server side of connection. Required argument to RpcSystem::bootStrap()
@@ -454,6 +453,16 @@ ProxyServerBase<Interface, Impl>::ProxyServerBase(std::shared_ptr<Impl> impl, Co
 
 //! ProxyServer destructor, called from the EventLoop thread by Cap'n Proto
 //! garbage collection code after there are no more references to this object.
+//! This will typically happen when the corresponding ProxyClient object on the
+//! other side of the connection is destroyed. It can also happen earlier if the
+//! connection is broken or destroyed. In the latter case this destructor will
+//! typically be called inside m_rpc_system.reset() call in the ~Connection
+//! destructor while the Connection object still exists. However, because
+//! ProxyServer objects are refcounted, and the Connection object could be
+//! destroyed while asynchronous IPC calls are still in-flight, it's possible
+//! for this destructor to be called after the Connection object no longer
+//! exists, so it is NOT valid to derference the m_context.connection pointer
+//! from this function.
 template <typename Interface, typename Impl>
 ProxyServerBase<Interface, Impl>::~ProxyServerBase()
 {
@@ -477,7 +486,7 @@ ProxyServerBase<Interface, Impl>::~ProxyServerBase()
         // connection is broken). Probably some refactoring of the destructor
         // and invokeDestroy function is possible to make this cleaner and more
         // consistent.
-        m_context.connection->addAsyncCleanup([impl=std::move(m_impl), fns=std::move(m_context.cleanup_fns)]() mutable {
+        m_context.loop->addAsyncCleanup([impl=std::move(m_impl), fns=std::move(m_context.cleanup_fns)]() mutable {
             impl.reset();
             CleanupRun(fns);
         });

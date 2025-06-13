@@ -82,10 +82,15 @@ ProxyContext::ProxyContext(Connection* connection) : connection(connection), loo
 
 Connection::~Connection()
 {
-    // Shut down RPC system first, since this will garbage collect Server
-    // objects that were not freed before the connection was closed, some of
-    // which may call addAsyncCleanup and add more cleanup callbacks which can
-    // run below.
+    // Shut down RPC system first, since this will garbage collect any
+    // ProxyServer objects that were not freed before the connection was closed.
+    // Typically all ProxyServer objects associated with this connection will be
+    // freed before this call returns. However that will not be the case if
+    // there are asynchronous IPC calls over this connection still currently
+    // executier that will not be the case if there are asynchronous IPC calls
+    // over this connection still currently executing. In that case Cap'n Proto
+    // will destroy the ProxyServer objects after the calls finish executing and
+    // try to send their responses.
     m_rpc_system.reset();
 
     // ProxyClient cleanup handlers are in sync list, and ProxyServer cleanup
@@ -134,13 +139,6 @@ Connection::~Connection()
         m_sync_cleanup_fns.front()();
         m_sync_cleanup_fns.pop_front();
     }
-    while (!m_async_cleanup_fns.empty()) {
-        const Lock lock(m_loop->m_mutex);
-        m_loop->m_async_fns->emplace_back(std::move(m_async_cleanup_fns.front()));
-        m_async_cleanup_fns.pop_front();
-    }
-    Lock lock(m_loop->m_mutex);
-    m_loop->startAsyncThread();
 }
 
 CleanupIt Connection::addSyncCleanup(std::function<void()> fn)
@@ -163,9 +161,9 @@ void Connection::removeSyncCleanup(CleanupIt it)
     m_sync_cleanup_fns.erase(it);
 }
 
-void Connection::addAsyncCleanup(std::function<void()> fn)
+void EventLoop::addAsyncCleanup(std::function<void()> fn)
 {
-    const Lock lock(m_loop->m_mutex);
+    const Lock lock(m_mutex);
     // Add async cleanup callbacks to the back of the list. Unlike the sync
     // cleanup list, this list order is more significant because it determines
     // the order server objects are destroyed when there is a sudden disconnect,
@@ -182,7 +180,8 @@ void Connection::addAsyncCleanup(std::function<void()> fn)
     // process, otherwise shared pointer counts of the CWallet objects (which
     // inherit from Chain::Notification) will not be 1 when WalletLoader
     // destructor runs and it will wait forever for them to be released.
-    m_async_cleanup_fns.emplace(m_async_cleanup_fns.end(), std::move(fn));
+    m_async_fns->emplace_back(std::move(fn));
+    startAsyncThread();
 }
 
 EventLoop::EventLoop(const char* exe_name, LogFn log_fn, void* context)
