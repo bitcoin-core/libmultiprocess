@@ -5,6 +5,7 @@
 #ifndef MP_TEST_FOO_H
 #define MP_TEST_FOO_H
 
+#include <cassert>
 #include <functional>
 #include <map>
 #include <memory>
@@ -78,6 +79,9 @@ public:
     FooEnum passEnum(FooEnum foo) { return foo; }
     int passFn(std::function<int()> fn) { return fn(); }
     std::shared_ptr<FooCallback> m_callback;
+    void callFn() { assert(m_fn); m_fn(); }
+    void callFnAsync() { assert(m_fn); m_fn(); }
+    std::function<void()> m_fn;
 };
 
 } // namespace test
