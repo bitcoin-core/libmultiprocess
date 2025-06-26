@@ -420,11 +420,7 @@ ProxyClientBase<Interface, Impl>::ProxyClientBase(typename Interface::Client cli
     // second case is handled by the disconnect_cb function, which sets
     // m_context.connection to null so nothing happens here.
     m_context.cleanup_fns.emplace_front([this, destroy_connection, disconnect_cb]{
-    if (m_context.connection) {
-        // Remove disconnect callback so it doesn't run and try to access this
-        // object after it's already destroyed.
-        m_context.connection->removeSyncCleanup(disconnect_cb);
-
+    {
         // If the capnp interface defines a destroy method, call it to destroy
         // the remote object, waiting for it to be deleted server side. If the
         // capnp interface does not define a destroy method, this will just call
@@ -433,6 +429,14 @@ ProxyClientBase<Interface, Impl>::ProxyClientBase(typename Interface::Client cli
 
         // FIXME: Could just invoke removed addCleanup fn here instead of duplicating code
         m_context.loop->sync([&]() {
+            // Remove disconnect callback on cleanup so it doesn't run and try
+            // to access this object after it's destroyed. This call needs to
+            // run inside loop->sync() on the event loop thread because
+            // otherwise, if there were an ill-timed disconnect, the
+            // onDisconnect handler could fire and delete the Connection object
+            // before the removeSyncCleanup call.
+            if (m_context.connection) m_context.connection->removeSyncCleanup(disconnect_cb);
+
             // Release client capability by move-assigning to temporary.
             {
                 typename Interface::Client(std::move(m_client));
