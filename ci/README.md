@@ -19,6 +19,7 @@ To run jobs locally:
 CI_CONFIG=ci/configs/default.bash ci/scripts/run.sh
 CI_CONFIG=ci/configs/llvm.bash    ci/scripts/run.sh
 CI_CONFIG=ci/configs/gnu32.bash   ci/scripts/run.sh
+CI_CONFIG=ci/configs/tsan.bash    ci/scripts/run.sh
 ```
 
 By default CI jobs will reuse their build directories. `CI_CLEAN=1` can be specified to delete them before running instead.

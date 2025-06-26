@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        config: [default, llvm, gnu32]
+        config: [default, llvm, gnu32, tsan]
 
     name: build • ${{ matrix.config }}
 
