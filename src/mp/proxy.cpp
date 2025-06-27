@@ -132,9 +132,11 @@ Connection::~Connection()
     // on clean and unclean shutdowns. In unclean shutdown case when the
     // connection is broken, sync and async cleanup lists will filled with
     // callbacks. In the clean shutdown case both lists will be empty.
+    Lock lock{m_loop->m_mutex};
     while (!m_sync_cleanup_fns.empty()) {
-        m_sync_cleanup_fns.front()();
-        m_sync_cleanup_fns.pop_front();
+        CleanupList fn;
+        fn.splice(fn.begin(), m_sync_cleanup_fns, m_sync_cleanup_fns.begin());
+        Unlock(lock, fn.front());
     }
 }
 
@@ -320,9 +322,9 @@ std::tuple<ConnThread, bool> SetThread(ConnThreads& threads, std::mutex& mutex, 
         // Connection is being destroyed before thread client is, so reset
         // thread client m_disconnect_cb member so thread client destructor does not
         // try unregister this callback after connection is destroyed.
-        thread->second.m_disconnect_cb.reset();
         // Remove connection pointer about to be destroyed from the map
         const std::unique_lock<std::mutex> lock(mutex);
+        thread->second.m_disconnect_cb.reset();
         threads.erase(thread);
     });
     return {thread, true};

@@ -75,6 +75,8 @@ struct ProxyClient<Thread> : public ProxyClientBase<Thread, ::capnp::Void>
     //! map. It will also reset m_disconnect_cb so the destructor does not
     //! access it. In the normal case where there is no sudden disconnect, the
     //! destructor will unregister m_disconnect_cb so the callback is never run.
+    //! Since this variable is accessed from multiple threads accesses should be
+    //! guarded with the associated Waiter::m_mutex.
     std::optional<CleanupIt> m_disconnect_cb;
 };
 
@@ -405,6 +407,7 @@ ProxyClientBase<Interface, Impl>::ProxyClientBase(typename Interface::Client cli
         {
             typename Interface::Client(std::move(m_client));
         }
+        Lock lock{m_context.loop->m_mutex};
         m_context.connection = nullptr;
     });
 
