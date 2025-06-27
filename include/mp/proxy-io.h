@@ -66,16 +66,16 @@ struct ProxyClient<Thread> : public ProxyClientBase<Thread, ::capnp::Void>
     ProxyClient(const ProxyClient&) = delete;
     ~ProxyClient();
 
-    void setCleanup(const std::function<void()>& fn);
+    void setDisconnectCallback(const std::function<void()>& fn);
 
-    //! Cleanup function to run when the connection is closed. If the Connection
-    //! gets destroyed before this ProxyClient<Thread> object, this cleanup
-    //! callback lets it destroy this object and remove its entry in the
-    //! thread's request_threads or callback_threads map (after resetting
-    //! m_cleanup_it so the destructor does not try to access it). But if this
-    //! object gets destroyed before the Connection, there's no need to run the
-    //! cleanup function and the destructor will unregister it.
-    std::optional<CleanupIt> m_cleanup_it;
+    //! Reference to callback function that is run if there is a sudden
+    //! disconnect and the Connection object is destroyed before this
+    //! ProxyClient<Thread> object. The callback will destroy this object and
+    //! remove its entry from the thread's request_threads or callback_threads
+    //! map. It will also reset m_disconnect_cb so the destructor does not
+    //! access it. In the normal case where there is no sudden disconnect, the
+    //! destructor will unregister m_disconnect_cb so the callback is never run.
+    std::optional<CleanupIt> m_disconnect_cb;
 };
 
 template <>
