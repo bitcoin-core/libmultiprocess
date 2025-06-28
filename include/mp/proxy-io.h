@@ -298,6 +298,13 @@ struct Waiter
         });
     }
 
+    //! Mutex mainly used internally by waiter class, but also used externally
+    //! to guard access to related state. Specifically, since the thread_local
+    //! ThreadContext struct owns a Waiter, the Waiter::m_mutex is used to guard
+    //! access to other parts of the struct to avoid needing to deal more
+    //! mutexes than necessary. This mutex can be held at the same time as
+    //! EventLoop::m_mutex as long as Waiter::mutex is locked first and
+    //! EventLoop::m_mutex is locked second.
     std::mutex m_mutex;
     std::condition_variable m_cv;
     std::optional<kj::Function<void()>> m_fn;
