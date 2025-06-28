@@ -66,16 +66,18 @@ struct ProxyClient<Thread> : public ProxyClientBase<Thread, ::capnp::Void>
     ProxyClient(const ProxyClient&) = delete;
     ~ProxyClient();
 
-    void setCleanup(const std::function<void()>& fn);
+    void setDisconnectCallback(const std::function<void()>& fn);
 
-    //! Cleanup function to run when the connection is closed. If the Connection
-    //! gets destroyed before this ProxyClient<Thread> object, this cleanup
-    //! callback lets it destroy this object and remove its entry in the
-    //! thread's request_threads or callback_threads map (after resetting
-    //! m_cleanup_it so the destructor does not try to access it). But if this
-    //! object gets destroyed before the Connection, there's no need to run the
-    //! cleanup function and the destructor will unregister it.
-    std::optional<CleanupIt> m_cleanup_it;
+    //! Reference to callback function that is run if there is a sudden
+    //! disconnect and the Connection object is destroyed before this
+    //! ProxyClient<Thread> object. The callback will destroy this object and
+    //! remove its entry from the thread's request_threads or callback_threads
+    //! map. It will also reset m_disconnect_cb so the destructor does not
+    //! access it. In the normal case where there is no sudden disconnect, the
+    //! destructor will unregister m_disconnect_cb so the callback is never run.
+    //! Since this variable is accessed from multiple threads accesses should be
+    //! guarded with the associated Waiter::m_mutex.
+    std::optional<CleanupIt> m_disconnect_cb;
 };
 
 template <>
@@ -298,6 +300,13 @@ struct Waiter
         });
     }
 
+    //! Mutex mainly used internally by waiter class, but also used externally
+    //! to guard access to related state. Specifically, since the thread_local
+    //! ThreadContext struct owns a Waiter, the Waiter::m_mutex is used to guard
+    //! access to other parts of the struct to avoid needing to deal more
+    //! mutexes than necessary. This mutex can be held at the same time as
+    //! EventLoop::m_mutex as long as Waiter::mutex is locked first and
+    //! EventLoop::m_mutex is locked second.
     std::mutex m_mutex;
     std::condition_variable m_cv;
     std::optional<kj::Function<void()>> m_fn;
@@ -393,11 +402,12 @@ ProxyClientBase<Interface, Impl>::ProxyClientBase(typename Interface::Client cli
 
 {
     // Handler for the connection getting destroyed before this client object.
-    auto cleanup_it = m_context.connection->addSyncCleanup([this]() {
+    auto disconnect_cb = m_context.connection->addSyncCleanup([this]() {
         // Release client capability by move-assigning to temporary.
         {
             typename Interface::Client(std::move(m_client));
         }
+        Lock lock{m_context.loop->m_mutex};
         m_context.connection = nullptr;
     });
 
@@ -410,14 +420,10 @@ ProxyClientBase<Interface, Impl>::ProxyClientBase(typename Interface::Client cli
     //   down while external code is still holding client references.
     //
     // The first case is handled here when m_context.connection is not null. The
-    // second case is handled by the cleanup function, which sets m_context.connection to
-    // null so nothing happens here.
-    m_context.cleanup_fns.emplace_front([this, destroy_connection, cleanup_it]{
-    if (m_context.connection) {
-        // Remove cleanup callback so it doesn't run and try to access
-        // this object after it's already destroyed.
-        m_context.connection->removeSyncCleanup(cleanup_it);
-
+    // second case is handled by the disconnect_cb function, which sets
+    // m_context.connection to null so nothing happens here.
+    m_context.cleanup_fns.emplace_front([this, destroy_connection, disconnect_cb]{
+    {
         // If the capnp interface defines a destroy method, call it to destroy
         // the remote object, waiting for it to be deleted server side. If the
         // capnp interface does not define a destroy method, this will just call
@@ -426,6 +432,14 @@ ProxyClientBase<Interface, Impl>::ProxyClientBase(typename Interface::Client cli
 
         // FIXME: Could just invoke removed addCleanup fn here instead of duplicating code
         m_context.loop->sync([&]() {
+            // Remove disconnect callback on cleanup so it doesn't run and try
+            // to access this object after it's destroyed. This call needs to
+            // run inside loop->sync() on the event loop thread because
+            // otherwise, if there were an ill-timed disconnect, the
+            // onDisconnect handler could fire and delete the Connection object
+            // before the removeSyncCleanup call.
+            if (m_context.connection) m_context.connection->removeSyncCleanup(disconnect_cb);
+
             // Release client capability by move-assigning to temporary.
             {
                 typename Interface::Client(std::move(m_client));
