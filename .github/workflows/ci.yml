@@ -5,6 +5,28 @@ on:
   pull_request:
 
 jobs:
+  build-netbsd:
+    runs-on: ubuntu-latest
+    name: build • netbsd
+    defaults:
+      run:
+        shell: netbsd {0}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Start NetBSD VM
+        uses: vmactions/netbsd-vm@v1
+        with:
+          prepare: |
+            pkg_add cmake ninja-build gcc14 pkg-config capnproto bash
+          sync: 'rsync'
+          copyback: false
+
+      - name: Run CI script
+        run: |
+          cd ${{ github.workspace }}
+          CI_CONFIG="ci/configs/netbsd.bash" bash ci/scripts/ci.sh
+
   build-openbsd:
     runs-on: ubuntu-latest
     name: build • openbsd
