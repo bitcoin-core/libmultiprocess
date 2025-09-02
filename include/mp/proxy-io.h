@@ -534,6 +534,10 @@ void ProxyServerBase<Interface, Impl>::invokeDestroy()
     CleanupRun(m_context.cleanup_fns);
 }
 
+//! Map from Connection to local or remote thread handle which will be used over
+//! that connection. This map will typically only contain one entry, but can
+//! contain multiple if a single thread makes IPC calls over multiple
+//! connections.
 using ConnThreads = std::map<Connection*, ProxyClient<Thread>>;
 using ConnThread = ConnThreads::iterator;
 
@@ -542,21 +546,59 @@ using ConnThread = ConnThreads::iterator;
 // inserted bool.
 std::tuple<ConnThread, bool> SetThread(ConnThreads& threads, std::mutex& mutex, Connection* connection, const std::function<Thread::Client()>& make_thread);
 
+//! The thread_local ThreadContext g_thread_context struct provides information
+//! about individual threads and a way of communicating between them. Because
+//! it's a thread local struct, each ThreadContext instance is initialized by
+//! the thread that owns it.
+//!
+//! ThreadContext is used for any client threads created externally which make
+//! IPC calls, and for server threads created by
+//! ProxyServer<ThreadMap>::makeThread() which execute IPC calls for clients.
+//!
+//! In both cases, the struct holds information like the thread name, and a
+//! Waiter object where the EventLoop can post incoming IPC requests to execute
+//! on the thread. The struct also holds ConnThread maps associating the thread
+//! with local and remote ProxyClient<Thread> objects.
 struct ThreadContext
 {
     //! Identifying string for debug.
     std::string thread_name;
 
-    //! Waiter object used to allow client threads blocked waiting for a server
-    //! response to execute callbacks made from the client's corresponding
-    //! server thread.
+    //! Waiter object used to allow remote clients to execute code on this
+    //! thread. For server threads created by
+    //! ProxyServer<ThreadMap>::makeThread(), this is initialized in that
+    //! function. Otherwise, for client threads created externally, this is
+    //! initialized the first time the thread tries to make an IPC call. Having
+    //! a waiter is necessary for threads making IPC calls in case a server they
+    //! are calling expects them to execute a callback during the call, before
+    //! it sends a response.
+    //!
+    //! For IPC client threads, the Waiter pointer is never cleared and the Waiter
+    //! just gets destroyed when the thread does. For server threads created by
+    //! makeThread(), this pointer is set to null in the ~ProxyServer<Thread> as
+    //! a signal for the thread to exit and destroy itself. In both cases, the
+    //! same Waiter object is used across different calls and only created and
+    //! destroyed once for the lifetime of the thread.
     std::unique_ptr<Waiter> waiter = nullptr;
 
     //! When client is making a request to a server, this is the
     //! `callbackThread` argument it passes in the request, used by the server
     //! in case it needs to make callbacks into the client that need to execute
     //! while the client is waiting. This will be set to a local thread object.
-    ConnThreads callback_threads;
+    //!
+    //! Synchronization note: The callback_thread and request_thread maps are
+    //! only ever accessed internally by this thread's destructor and externally
+    //! by Cap'n Proto event loop threads. Since it's possible for IPC client
+    //! threads to make calls over different connections that could have
+    //! different event loops, these maps are guarded by Waiter::m_mutex in case
+    //! different event loop threads add or remove map entries simultaneously.
+    //! However, individual ProxyClient<Thread> objects in the maps will only be
+    //! associated with one event loop and guarded by EventLoop::m_mutex. So
+    //! Waiter::m_mutex does not need to be held while accessing individual
+    //! ProxyClient<Thread> instances, and may even need to be released to
+    //! respect lock order and avoid locking Waiter::m_mutex before
+    //! EventLoop::m_mutex.
+    ConnThreads callback_threads MP_GUARDED_BY(waiter->m_mutex);
 
     //! When client is making a request to a server, this is the `thread`
     //! argument it passes in the request, used to control which thread on
@@ -565,6 +607,8 @@ struct ThreadContext
     //! by makeThread. If a client call is being made from a thread currently
     //! handling a server request, this will be set to the `callbackThread`
     //! request thread argument passed in that request.
+    //!
+    //! Synchronization note: \ref callback_threads note applies here as well.
     ConnThreads request_threads;
 
     //! Whether this thread is a capnp event loop thread. Not really used except
