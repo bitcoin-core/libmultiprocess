@@ -66,8 +66,6 @@ struct ProxyClient<Thread> : public ProxyClientBase<Thread, ::capnp::Void>
     ProxyClient(const ProxyClient&) = delete;
     ~ProxyClient();
 
-    void setDisconnectCallback(const std::function<void()>& fn);
-
     //! Reference to callback function that is run if there is a sudden
     //! disconnect and the Connection object is destroyed before this
     //! ProxyClient<Thread> object. The callback will destroy this object and
@@ -537,8 +535,10 @@ void ProxyServerBase<Interface, Impl>::invokeDestroy()
 //! Map from Connection to local or remote thread handle which will be used over
 //! that connection. This map will typically only contain one entry, but can
 //! contain multiple if a single thread makes IPC calls over multiple
-//! connections.
-using ConnThreads = std::map<Connection*, ProxyClient<Thread>>;
+//! connections. A std::optional value type is used to avoid the map needing to
+//! be locked while ProxyClient<Thread> objects are constructed, see
+//! ThreadContext "Synchronization note" below.
+using ConnThreads = std::map<Connection*, std::optional<ProxyClient<Thread>>>;
 using ConnThread = ConnThreads::iterator;
 
 // Retrieve ProxyClient<Thread> object associated with this connection from a

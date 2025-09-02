@@ -47,8 +47,8 @@ void CustomBuildField(TypeList<>,
         &connection, make_request_thread)};
 
     auto context = output.init();
-    context.setThread(request_thread->second.m_client);
-    context.setCallbackThread(callback_thread->second.m_client);
+    context.setThread(request_thread->second->m_client);
+    context.setCallbackThread(callback_thread->second->m_client);
 }
 
 //! PassField override for mp.Context arguments. Return asynchronously and call
@@ -89,10 +89,13 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                     // need to update the map.
                     auto& thread_context = g_thread_context;
                     auto& request_threads = thread_context.request_threads;
-                    auto [request_thread, inserted]{SetThread(
-                        request_threads, thread_context.waiter->m_mutex,
-                        server.m_context.connection,
-                        [&] { return context_arg.getCallbackThread(); })};
+                    ConnThread request_thread;
+                    bool inserted;
+                    server.m_context.loop->sync([&] {
+                        std::tie(request_thread, inserted) = SetThread(
+                            request_threads, thread_context.waiter->m_mutex, server.m_context.connection,
+                            [&] { return context_arg.getCallbackThread(); });
+                    });
 
                     // If an entry was inserted into the requests_threads map,
                     // remove it after calling fn.invoke. If an entry was not
@@ -101,17 +104,24 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                     // makes another IPC call), so avoid modifying the map.
                     const bool erase_thread{inserted};
                     KJ_DEFER(if (erase_thread) {
-                        std::unique_lock<std::mutex> lock(thread_context.waiter->m_mutex);
-                        // Call erase here with a Connection* argument instead
-                        // of an iterator argument, because the `request_thread`
-                        // iterator may be invalid if the connection is closed
-                        // during this function call. More specifically, the
-                        // iterator may be invalid because SetThread adds a
-                        // cleanup callback to the Connection destructor that
-                        // erases the thread from the map, and also because the
-                        // ProxyServer<Thread> destructor calls
-                        // request_threads.clear().
-                        request_threads.erase(server.m_context.connection);
+                        // Erase the request_threads entry on the event loop
+                        // thread with loop->sync(), so if the connection is
+                        // broken there is not a race between this thread and
+                        // the disconnect handler trying to destroy the thread
+                        // client object.
+                        server.m_context.loop->sync([&] {
+                            // Look up the thread again without using existing
+                            // iterator since entry may no longer be there after
+                            // a disconnect. Destroy node after releasing
+                            // Waiter::m_mutex, so the ProxyClient<Thread>
+                            // destructor is able to use EventLoop::mutex
+                            // without violating lock order.
+                            ConnThreads::node_type removed;
+                            {
+                                std::unique_lock<std::mutex> lock(thread_context.waiter->m_mutex);
+                                removed = request_threads.extract(server.m_context.connection);
+                            }
+                        });
                     });
                     fn.invoke(server_context, args...);
                 }
