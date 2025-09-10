@@ -103,25 +103,27 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                     // recursive call (IPC call calling back to the caller which
                     // makes another IPC call), so avoid modifying the map.
                     const bool erase_thread{inserted};
-                    KJ_DEFER(if (erase_thread) {
-                        // Erase the request_threads entry on the event loop
-                        // thread with loop->sync(), so if the connection is
-                        // broken there is not a race between this thread and
-                        // the disconnect handler trying to destroy the thread
-                        // client object.
-                        server.m_context.loop->sync([&] {
-                            // Look up the thread again without using existing
-                            // iterator since entry may no longer be there after
-                            // a disconnect. Destroy node after releasing
-                            // Waiter::m_mutex, so the ProxyClient<Thread>
-                            // destructor is able to use EventLoop::mutex
-                            // without violating lock order.
-                            ConnThreads::node_type removed;
-                            {
-                                std::unique_lock<std::mutex> lock(thread_context.waiter->m_mutex);
-                                removed = request_threads.extract(server.m_context.connection);
-                            }
-                        });
+                    [[maybe_unused]] const auto _cleanup = kj::defer([&] {
+                        if (erase_thread) {
+                            // Erase the request_threads entry on the event loop
+                            // thread with loop->sync(), so if the connection is
+                            // broken there is not a race between this thread and
+                            // the disconnect handler trying to destroy the thread
+                            // client object.
+                            server.m_context.loop->sync([&] {
+                                // Look up the thread again without using existing
+                                // iterator since entry may no longer be there after
+                                // a disconnect. Destroy node after releasing
+                                // Waiter::m_mutex, so the ProxyClient<Thread>
+                                // destructor is able to use EventLoop::mutex
+                                // without violating lock order.
+                                ConnThreads::node_type removed;
+                                {
+                                    std::unique_lock<std::mutex> lock(thread_context.waiter->m_mutex);
+                                    removed = request_threads.extract(server.m_context.connection);
+                                }
+                            });
+                        }
                     });
                     fn.invoke(server_context, args...);
                 }
