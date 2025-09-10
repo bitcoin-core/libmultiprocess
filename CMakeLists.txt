@@ -10,6 +10,11 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(CMAKE_CXX_STANDARD_REQUIRED YES)
 endif()
 
+# Disable automatic C++20 module dependency scanning.
+# CMake >=3.28 tries to use `clang-scan-deps` by default, which may not
+# be installed on all platforms. We don't use named modules, so turn this off.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
 include("cmake/compat_find.cmake")
 
 add_library(mpdeps INTERFACE)
