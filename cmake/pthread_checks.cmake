@@ -9,7 +9,7 @@ include(CMakePushCheckState)
 include(CheckCXXSourceCompiles)
 
 cmake_push_check_state()
-set(CMAKE_REQUIRED_LIBRARIES Threads::Threads)
+set(CMAKE_REQUIRED_LIBRARIES mpdeps)
 check_cxx_source_compiles("
   #include <pthread.h>
   int main(int argc, char** argv)
