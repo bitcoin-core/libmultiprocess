@@ -4,6 +4,10 @@
 
 cmake_minimum_required(VERSION 3.12...4.1)
 
+if(BSD AND POLICY CMP0155)
+  cmake_policy(SET CMP0155 OLD)
+endif()
+
 project("Libmultiprocess" CXX)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(CMAKE_CXX_STANDARD 20)
