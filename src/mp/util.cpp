@@ -7,10 +7,12 @@
 
 #include <cerrno>
 #include <cstdio>
+#include <filesystem>
 #include <kj/common.h>
 #include <kj/string-tree.h>
 #include <pthread.h>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -28,6 +30,8 @@
 #ifdef HAVE_PTHREAD_GETTHREADID_NP
 #include <pthread_np.h>
 #endif // HAVE_PTHREAD_GETTHREADID_NP
+
+namespace fs = std::filesystem;
 
 namespace mp {
 namespace {
@@ -130,6 +134,12 @@ int SpawnProcess(int& pid, FdToArgsFn&& fd_to_args)
 
 void ExecProcess(const std::vector<std::string>& args)
 {
+    assert(!args.empty());
+    if (const fs::path& executable{fs::weakly_canonical(args.front())};
+        !fs::exists(executable)) {
+        throw std::runtime_error{"'" + executable.string() + "' is missing, cannot execute."};
+    }
+
     std::vector<char*> argv;
     argv.reserve(args.size());
     for (const auto& arg : args) {
