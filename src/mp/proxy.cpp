@@ -191,13 +191,13 @@ void EventLoop::addAsyncCleanup(std::function<void()> fn)
     startAsyncThread();
 }
 
-EventLoop::EventLoop(const char* exe_name, LogFn log_fn, void* context)
+EventLoop::EventLoop(const char* exe_name, LogOptions log_opts, void* context)
     : m_exe_name(exe_name),
       m_io_context(kj::setupAsyncIo()),
       m_task_set(new kj::TaskSet(m_error_handler)),
+      m_log_opts(std::move(log_opts)),
       m_context(context)
 {
-    m_log_opts.log_fn = log_fn;
     int fds[2];
     KJ_SYSCALL(socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
     m_wait_fd = fds[0];
