@@ -136,6 +136,9 @@ struct LogOptions {
     //! Maximum number of characters to use when representing
     //! request and response structs as strings.
     size_t max_chars{200};
+
+    //! Enable verbose logging which may affect performance
+    bool verbose{false};
 };
 
 std::string LongThreadName(const char* exe_name);
@@ -168,8 +171,13 @@ std::string LongThreadName(const char* exe_name);
 class EventLoop
 {
 public:
-    //! Construct event loop object.
-    EventLoop(const char* exe_name, LogFn log_fn, void* context = nullptr);
+    //! Construct event loop object with default logging options.
+    EventLoop(const char* exe_name, LogFn log_fn, void* context = nullptr)
+        : EventLoop(exe_name, LogOptions{std::move(log_fn)}, context){}
+
+    //! Construct event loop object with specified logging options.
+    EventLoop(const char* exe_name, LogOptions log_opts, void* context = nullptr);
+
     ~EventLoop();
 
     //! Run event loop. Does not return until shutdown. This should only be
