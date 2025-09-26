@@ -281,12 +281,13 @@ struct Waiter
     Waiter() = default;
 
     template <typename Fn>
-    void post(Fn&& fn)
+    bool post(Fn&& fn)
     {
         const Lock lock(m_mutex);
-        assert(!m_fn);
+        if (m_fn) return false;
         m_fn = std::forward<Fn>(fn);
         m_cv.notify_all();
+        return true;
     }
 
     template <class Predicate>
