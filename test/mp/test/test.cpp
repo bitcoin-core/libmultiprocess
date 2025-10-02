@@ -10,10 +10,8 @@
 #include <capnp/rpc.h>
 #include <condition_variable>
 #include <cstring>
-#include <exception>
 #include <functional>
 #include <future>
-#include <iostream>
 #include <kj/async.h>
 #include <kj/async-io.h>
 #include <kj/common.h>
@@ -24,14 +22,15 @@
 #include <kj/test.h>
 #include <memory>
 #include <mp/proxy.h>
-#include "mp/proxy.capnp.h"
+#include <mp/proxy.capnp.h>
 #include <mp/proxy-io.h>
-#include "mp/util.h"
+#include <mp/util.h>
 #include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -67,9 +66,10 @@ public:
 
     TestSetup(bool client_owns_connection = true)
         : thread{[&] {
-              EventLoop loop("mptest", [](mp::LogMessage log_data) {
-                  std::cout << "LOG" << (int)log_data.level << ": " << log_data.message << "\n";
-                  if (log_data.level == mp::Log::Raise) throw std::runtime_error(log_data.message);
+              EventLoop loop("mptest", [](mp::LogMessage log) {
+                  // Info logs are not printed by default, but will be shown with `mptest --verbose`
+                  KJ_LOG(INFO, log.level, log.message);
+                  if (log.level == mp::Log::Raise) throw std::runtime_error(log.message);
               });
               auto pipe = loop.m_io_context.provider->newTwoWayPipe();
 
@@ -321,21 +321,21 @@ KJ_TEST("Make simultaneous IPC callbacks with same request_thread and callback_t
     setup.server->m_impl->m_fn = [&] {};
     foo->callFnAsync();
     ThreadContext& tc{g_thread_context};
-    std::optional<Thread::Client> callback_thread, request_thread;
-    {
+    Thread::Client *callback_thread, *request_thread;
+    foo->m_context.loop->sync([&] {
         Lock lock(tc.waiter->m_mutex);
-        callback_thread = tc.callback_threads.at(foo->m_context.connection)->m_client;
-        request_thread = tc.request_threads.at(foo->m_context.connection)->m_client;
-    }
+        callback_thread = &tc.callback_threads.at(foo->m_context.connection)->m_client;
+        request_thread = &tc.request_threads.at(foo->m_context.connection)->m_client;
+    });
 
     setup.server->m_impl->m_fn = [&] {
         try
         {
             signal.get_future().get();
         }
-        catch(const std::exception& e)
+        catch (const std::future_error& e)
         {
-            KJ_EXPECT(e.what() == std::string("Future already retrieved"));
+            KJ_EXPECT(e.code() == std::make_error_code(std::future_errc::future_already_retrieved));
         }
     };
 

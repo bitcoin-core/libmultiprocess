@@ -98,6 +98,7 @@ public:
     EventLoop& m_loop;
 };
 
+//! Log flags. Update stringify function if changed!
 enum class Log {
     Trace = 0,
     Debug,
@@ -106,6 +107,8 @@ enum class Log {
     Error,
     Raise,
 };
+
+kj::StringPtr KJ_STRINGIFY(Log flags);
 
 struct LogMessage {
 
