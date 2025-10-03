@@ -4,6 +4,6 @@ NIX_ARGS=(
   --arg minimal true
   --arg crossPkgs 'import <nixpkgs> { crossSystem = { config = "i686-unknown-linux-gnu"; }; }'
 )
-export CXXFLAGS="-Werror -Wall -Wextra -Wpedantic -Wno-unused-parameter"
+export CXXFLAGS="-Werror -Wall -Wextra -Wpedantic -Wno-unused-parameter -ggdb"
 CMAKE_ARGS=(-G Ninja)
 BUILD_ARGS=(-k 0)

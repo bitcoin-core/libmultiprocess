@@ -29,6 +29,7 @@
 #include "mp/util.h"
 #include <optional>
 #include <set>
+#include <signal.h>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -67,6 +68,12 @@ public:
 
     TestSetup(bool client_owns_connection = true)
         : thread{[&] {
+              // Restore default sigsegv handler to enable core dumps
+              struct sigaction dfl{};
+              dfl.sa_handler = SIG_DFL;
+              sigemptyset(&dfl.sa_mask);
+              sigaction(SIGSEGV, &dfl, nullptr);
+
               EventLoop loop("mptest", [](mp::LogMessage log_data) {
                   std::cout << "LOG" << (int)log_data.level << ": " << log_data.message << "\n";
                   if (log_data.level == mp::Log::Raise) throw std::runtime_error(log_data.message);
@@ -321,12 +328,12 @@ KJ_TEST("Make simultaneous IPC callbacks with same request_thread and callback_t
     setup.server->m_impl->m_fn = [&] {};
     foo->callFnAsync();
     ThreadContext& tc{g_thread_context};
-    std::optional<Thread::Client> callback_thread, request_thread;
-    {
+    Thread::Client *callback_thread, *request_thread;
+    foo->m_context.loop->sync([&] {
         Lock lock(tc.waiter->m_mutex);
-        callback_thread = tc.callback_threads.at(foo->m_context.connection)->m_client;
-        request_thread = tc.request_threads.at(foo->m_context.connection)->m_client;
-    }
+        callback_thread = &tc.callback_threads.at(foo->m_context.connection)->m_client;
+        request_thread = &tc.request_threads.at(foo->m_context.connection)->m_client;
+    });
 
     setup.server->m_impl->m_fn = [&] {
         try
