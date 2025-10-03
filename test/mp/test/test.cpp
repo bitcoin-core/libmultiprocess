@@ -309,14 +309,14 @@ KJ_TEST("Calling IPC method, disconnecting and blocking during the call")
     signal.set_value();
 }
 
-KJ_TEST("Make simultaneous IPC callbacks with same request_thread and callback_thread")
+KJ_TEST("Make simultaneous IPC calls to trigger 'thread busy' error")
 {
     TestSetup setup;
     ProxyClient<messages::FooInterface>* foo = setup.client.get();
     std::promise<void> signal;
 
     foo->initThreadMap();
-    // Use callFnAsync() to get the client to setup the request_thread
+    // Use callFnAsync() to get the client to set up the request_thread
     // that will be used for the test.
     setup.server->m_impl->m_fn = [&] {};
     foo->callFnAsync();
@@ -341,7 +341,7 @@ KJ_TEST("Make simultaneous IPC callbacks with same request_thread and callback_t
 
     auto client{foo->m_client};
     bool caught_thread_busy = false;
-    // NOTE: '3' was choosen because it was the lowest number
+    // NOTE: '3' was chosen because it was the lowest number
     // of simultaneous calls required to reliably catch a "thread busy" error
     std::atomic<size_t> running{3};
     foo->m_context.loop->sync([&]
