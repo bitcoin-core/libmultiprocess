@@ -34,4 +34,5 @@ else
     cmake --build . --target "$t" -- "${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}"
   done
 fi
+ulimit -c unlimited || true
 ctest --output-on-failure

@@ -29,6 +29,7 @@
 #include "mp/util.h"
 #include <optional>
 #include <set>
+#include <signal.h>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -67,6 +68,12 @@ public:
 
     TestSetup(bool client_owns_connection = true)
         : thread{[&] {
+              // Restore default sigsegv handler to enable core dumps
+              struct sigaction dfl{};
+              dfl.sa_handler = SIG_DFL;
+              sigemptyset(&dfl.sa_mask);
+              sigaction(SIGSEGV, &dfl, nullptr);
+
               EventLoop loop("mptest", [](mp::LogMessage log_data) {
                   std::cout << "LOG" << (int)log_data.level << ": " << log_data.message << "\n";
                   if (log_data.level == mp::Log::Raise) throw std::runtime_error(log_data.message);
