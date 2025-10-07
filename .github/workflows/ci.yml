@@ -47,7 +47,7 @@ jobs:
         uses: vmactions/freebsd-vm@v1
         with:
           prepare: |
-            pkg install -y cmake ninja bash capnproto
+            pkg install -y cmake ninja bash capnproto git
           sync: 'rsync'
           copyback: false
 
@@ -79,7 +79,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        config: [default, llvm, gnu32, sanitize, olddeps]
+        config: [default, llvm, gnu32, sanitize, olddeps, newdeps]
 
     name: build • ${{ matrix.config }}
 
