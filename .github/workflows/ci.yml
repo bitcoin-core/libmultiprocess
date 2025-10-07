@@ -76,6 +76,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:
+      NIX_EXTRA_CONFIG_ACT: |
+        sandbox = false
+        filter-syscalls = false
+
     strategy:
       fail-fast: false
       matrix:
@@ -90,6 +95,10 @@ jobs:
         uses: cachix/install-nix-action@v31       # 2025-05-27, from https://github.com/cachix/install-nix-action/tags
         with:
           nix_path: nixpkgs=channel:nixos-25.05   # latest release
+          # Act executes inside an unprivileged container (Docker or Podman),
+          # so KVM support isn't available.
+          enable_kvm: "${{ github.actor != 'nektos/act' }}"
+          extra_nix_config: ${{ github.actor == 'nektos/act' && env.NIX_EXTRA_CONFIG_ACT || '' }}
 
       - name: Run CI script
         env:
