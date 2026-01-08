@@ -221,10 +221,11 @@ using FdToArgsFn = std::function<std::vector<std::string>(int fd)>;
 
 //! Spawn a new process that communicates with the current process over a socket
 //! pair. Returns pid through an output argument, and file descriptor for the
-//! local side of the socket. Invokes fd_to_args callback with the remote file
-//! descriptor number which returns the command line arguments that should be
-//! used to execute the process, and which should have the remote file
-//! descriptor embedded in whatever format the child process expects.
+//! local side of the socket.
+//! The fd_to_args callback is invoked in the parent process before fork().
+//! It must not rely on child pid/state, and must return the command line
+//! arguments that should be used to execute the process. Embed the remote file
+//! descriptor number in whatever format the child process expects.
 int SpawnProcess(int& pid, FdToArgsFn&& fd_to_args);
 
 //! Call execvp with vector args.
