@@ -128,6 +128,7 @@ int SpawnProcess(int& pid, FdToArgsFn&& fd_to_args)
     }
     // Parent process closes the descriptor for socket 0, child closes the descriptor for socket 1.
     if (close(fds[pid ? 0 : 1]) != 0) {
+        if (pid) (void)close(fds[1]);
         throw std::system_error(errno, std::system_category(), "close");
     }
     if (!pid) {
