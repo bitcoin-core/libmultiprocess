@@ -56,7 +56,7 @@ let
   clang = if enableLibcxx then llvm.libcxxClang else llvm.clang;
   clang-tools = llvm.clang-tools.override { inherit enableLibcxx; };
   cmakeHashes = {
-    "3.12.4" = "sha256-UlVYS/0EPrcXViz/iULUcvHA5GecSUHYS6raqbKOMZQ=";
+    "3.22.6" = "sha256-c5MxY2cOpOqVwjFUkAewxyQygik1BqLPRENxSCatXsM=";
   };
   cmakeBuild = if cmakeVersion == null then pkgs.cmake else (pkgs.cmake.overrideAttrs (old: {
     version = cmakeVersion;
