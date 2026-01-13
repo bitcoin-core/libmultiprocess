@@ -87,6 +87,10 @@ Connection::~Connection()
     // event loop thread, and if there was a remote disconnect, this is called
     // by an onDisconnect callback directly from the event loop thread.
     assert(std::this_thread::get_id() == m_loop->m_thread_id);
+
+    // Try to cancel any calls that may be executing.
+    m_canceler.cancel("Interrupted by disconnect");
+
     // Shut down RPC system first, since this will garbage collect any
     // ProxyServer objects that were not freed before the connection was closed.
     // Typically all ProxyServer objects associated with this connection will be
