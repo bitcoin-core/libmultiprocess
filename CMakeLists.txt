@@ -90,13 +90,6 @@ if(MP_ENABLE_CLANG_TIDY)
     message(FATAL_ERROR "MP_ENABLE_CLANG_TIDY is ON but clang-tidy is not found.")
   endif()
   set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_EXECUTABLE}")
-
-  # Workaround for nix from https://gitlab.kitware.com/cmake/cmake/-/issues/20912#note_793338
-  # Nix injects header paths via $NIX_CFLAGS_COMPILE; CMake tags these as
-  # CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES and omits them from the compile
-  # database, so clang-tidy, which ignores $NIX_CFLAGS_COMPILE, can't find capnp
-  # headers. Setting them as standard passes them to clang-tidy.
-  set(CMAKE_CXX_STANDARD_INCLUDE_DIRECTORIES ${CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES})
 endif()
 
 option(MP_ENABLE_IWYU "Run include-what-you-use with the compiler." OFF)
@@ -109,6 +102,15 @@ if(MP_ENABLE_IWYU)
   if(DEFINED ENV{IWYU_MAPPING_FILE})
     list(APPEND CMAKE_CXX_INCLUDE_WHAT_YOU_USE "-Xiwyu" "--mapping_file=$ENV{IWYU_MAPPING_FILE}")
   endif()
+endif()
+
+if(MP_ENABLE_CLANG_TIDY OR MP_ENABLE_IWYU)
+  # Workaround for nix from https://gitlab.kitware.com/cmake/cmake/-/issues/20912#note_793338
+  # Nix injects header paths via $NIX_CFLAGS_COMPILE; CMake tags these as
+  # CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES and omits them from the compile
+  # database, so clang-tidy, which ignores $NIX_CFLAGS_COMPILE, can't find capnp
+  # headers. Setting them as standard passes them to clang-tidy.
+  set(CMAKE_CXX_STANDARD_INCLUDE_DIRECTORIES ${CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES})
 endif()
 
 include("cmake/compat_config.cmake")
