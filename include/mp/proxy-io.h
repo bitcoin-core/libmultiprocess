@@ -96,6 +96,9 @@ public:
     EventLoopRef m_loop;
     ThreadContext& m_thread_context;
     std::thread m_thread;
+    //! Promise signaled when m_thread_context.waiter is ready and there is no
+    //! post() callback function waiting to execute.
+    kj::Promise<void> m_thread_ready{kj::READY_NOW};
 };
 
 //! Handler for kj::TaskSet failed task events.
@@ -692,9 +695,22 @@ struct ThreadContext
 template<typename T, typename Fn>
 kj::Promise<T> ProxyServer<Thread>::post(Fn&& fn)
 {
-    {
+    auto ready = kj::newPromiseAndFulfiller<void>(); // Signaled when waiter is ready to post again.
+    auto ret = m_thread_ready.then([this, fn = std::forward<Fn>(fn), ready_fulfiller = kj::mv(ready.fulfiller)]() mutable {
         auto result = kj::newPromiseAndFulfiller<T>(); // Signaled when fn() is called, with its return value.
-        bool posted = m_thread_context.waiter->post([this, fn = std::forward<Fn>(fn), result_fulfiller = kj::mv(result.fulfiller)]() mutable {
+        bool posted = m_thread_context.waiter->post([this, fn = std::forward<Fn>(fn), ready_fulfiller = kj::mv(ready_fulfiller), result_fulfiller = kj::mv(result.fulfiller)]() mutable {
+            // Fulfill ready.promise now, as soon as the Waiter starts executing
+            // this lambda, so the next ProxyServer<Thread>::post() call can
+            // immediately call waiter->post(). It is important to do this
+            // before calling fn() because fn() can make an IPC call back to the
+            // client, which can make another IPC call to this server thread.
+            // (This typically happens when IPC methods take std::function
+            // parameters.) When this happens the second call to the server
+            // thread should not be blocked waiting for the first call.
+            m_loop->sync([ready_fulfiller = kj::mv(ready_fulfiller)]() mutable {
+                ready_fulfiller->fulfill();
+                ready_fulfiller = nullptr;
+            });
             std::optional<T> result_value;
             kj::Maybe<kj::Exception> exception{kj::runCatchingExceptions([&]{ result_value.emplace(fn()); })};
             m_loop->sync([&result_value, &exception, result_fulfiller = kj::mv(result_fulfiller)]() mutable {
@@ -709,9 +725,15 @@ kj::Promise<T> ProxyServer<Thread>::post(Fn&& fn)
                 result_fulfiller = nullptr;
             });
         });
-        if (!posted) throw std::runtime_error("thread busy");
+        // Assert that calling Waiter::post did not fail. It could only return
+        // false if a new function was posted before the previous one finished
+        // executing, but new functions are only posted when m_thread_ready is
+        // signaled, so this should never happen.
+        assert(posted);
         return kj::mv(result.promise);
-    }
+    });
+    m_thread_ready = kj::mv(ready.promise);
+    return ret;
 }
 
 //! Given stream file descriptor, make a new ProxyClient object to send requests
