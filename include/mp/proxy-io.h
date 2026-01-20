@@ -82,9 +82,18 @@ template <>
 struct ProxyServer<Thread> final : public Thread::Server
 {
 public:
-    ProxyServer(ThreadContext& thread_context, std::thread&& thread);
+    ProxyServer(Connection& connection, ThreadContext& thread_context, std::thread&& thread);
     ~ProxyServer();
     kj::Promise<void> getName(GetNameContext context) override;
+
+    //! Run a callback function fn returning T on this thread. The function will
+    //! be queued and executed as soon as the thread is idle, and when fn
+    //! returns, the promise returned by this method will be fulfilled with the
+    //! value fn returned.
+    template<typename T, typename Fn>
+    kj::Promise<T> post(Fn&& fn);
+
+    EventLoopRef m_loop;
     ThreadContext& m_thread_context;
     std::thread m_thread;
 };
@@ -322,7 +331,12 @@ public:
 //! thread is blocked waiting for server response, this is what allows the
 //! client to run the request in the same thread, the same way code would run in a
 //! single process, with the callback sharing the same thread stack as the original
-//! call.)
+//! call.) To support this, the clientInvoke function calls Waiter::wait() to
+//! block the client IPC thread while initial request is in progress. Then if
+//! there is a callback, it is executed with Waiter::post().
+//!
+//! The Waiter class is also used server-side by `ProxyServer<Thread>::post()`
+//! to execute IPC calls on worker threads.
 struct Waiter
 {
     Waiter() = default;
@@ -674,6 +688,31 @@ struct ThreadContext
     //! which could deadlock the thread.
     bool loop_thread = false;
 };
+
+template<typename T, typename Fn>
+kj::Promise<T> ProxyServer<Thread>::post(Fn&& fn)
+{
+    {
+        auto result = kj::newPromiseAndFulfiller<T>(); // Signaled when fn() is called, with its return value.
+        bool posted = m_thread_context.waiter->post([this, fn = std::forward<Fn>(fn), result_fulfiller = kj::mv(result.fulfiller)]() mutable {
+            std::optional<T> result_value;
+            kj::Maybe<kj::Exception> exception{kj::runCatchingExceptions([&]{ result_value.emplace(fn()); })};
+            m_loop->sync([&result_value, &exception, result_fulfiller = kj::mv(result_fulfiller)]() mutable {
+                KJ_IF_MAYBE(e, exception) {
+                    assert(!result_value);
+                    result_fulfiller->reject(kj::mv(*e));
+                } else {
+                    assert(result_value);
+                    result_fulfiller->fulfill(kj::mv(*result_value));
+                    result_value.reset();
+                }
+                result_fulfiller = nullptr;
+            });
+        });
+        if (!posted) throw std::runtime_error("thread busy");
+        return kj::mv(result.promise);
+    }
+}
 
 //! Given stream file descriptor, make a new ProxyClient object to send requests
 //! over the stream. Also create a new Connection object embedded in the

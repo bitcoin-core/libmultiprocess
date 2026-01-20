@@ -362,8 +362,8 @@ ProxyClient<Thread>::~ProxyClient()
     }
 }
 
-ProxyServer<Thread>::ProxyServer(ThreadContext& thread_context, std::thread&& thread)
-    : m_thread_context(thread_context), m_thread(std::move(thread))
+ProxyServer<Thread>::ProxyServer(Connection& connection, ThreadContext& thread_context, std::thread&& thread)
+    : m_loop{*connection.m_loop}, m_thread_context(thread_context), m_thread(std::move(thread))
 {
     assert(m_thread_context.waiter.get() != nullptr);
 }
@@ -418,7 +418,7 @@ kj::Promise<void> ProxyServer<ThreadMap>::makeThread(MakeThreadContext context)
         // is just waiter getting set to null.)
         g_thread_context.waiter->wait(lock, [] { return !g_thread_context.waiter; });
     });
-    auto thread_server = kj::heap<ProxyServer<Thread>>(*thread_context.get_future().get(), std::move(thread));
+    auto thread_server = kj::heap<ProxyServer<Thread>>(m_connection, *thread_context.get_future().get(), std::move(thread));
     auto thread_client = m_connection.m_threads.add(kj::mv(thread_server));
     context.getResults().setResult(kj::mv(thread_client));
     return kj::READY_NOW;

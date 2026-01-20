@@ -26,7 +26,7 @@ void CustomBuildField(TypeList<>,
     // future calls over this connection can reuse it.
     auto [callback_thread, _]{SetThread(
         GuardedRef{thread_context.waiter->m_mutex, thread_context.callback_threads}, &connection,
-        [&] { return connection.m_threads.add(kj::heap<ProxyServer<Thread>>(thread_context, std::thread{})); })};
+        [&] { return connection.m_threads.add(kj::heap<ProxyServer<Thread>>(connection, thread_context, std::thread{})); })};
 
     // Call remote ThreadMap.makeThread function so server will create a
     // dedicated worker thread to run function calls from this thread. Store the
@@ -61,11 +61,10 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
 {
     const auto& params = server_context.call_context.getParams();
     Context::Reader context_arg = Accessor::get(params);
-    auto future = kj::newPromiseAndFulfiller<typename ServerContext::CallContext>();
     auto& server = server_context.proxy_server;
     int req = server_context.req;
-    auto invoke = [fulfiller = kj::mv(future.fulfiller),
-         call_context = kj::mv(server_context.call_context), &server, req, fn, args...]() mutable {
+    auto invoke = [call_context = kj::mv(server_context.call_context), &server, req, fn, args...]() mutable {
+                MP_LOG(*server.m_context.loop, Log::Debug) << "IPC server executing request #" << req;
                 const auto& params = call_context.getParams();
                 Context::Reader context_arg = Accessor::get(params);
                 ServerContext server_context{server, call_context, req};
@@ -125,18 +124,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                     });
                     fn.invoke(server_context, args...);
                 }
-                KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&]() {
-                    server.m_context.loop->sync([&] {
-                        auto fulfiller_dispose = kj::mv(fulfiller);
-                        fulfiller_dispose->fulfill(kj::mv(call_context));
-                    });
-                }))
-                {
-                    server.m_context.loop->sync([&]() {
-                        auto fulfiller_dispose = kj::mv(fulfiller);
-                        fulfiller_dispose->reject(kj::mv(*exception));
-                    });
-                }
+                return call_context;
             };
 
     // Lookup Thread object specified by the client. The specified thread should
@@ -149,23 +137,16 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
             // `invoke` lambda above which will invoke the function on that
             // thread.
             KJ_IF_MAYBE (thread_server, perhaps) {
-                const auto& thread = static_cast<ProxyServer<Thread>&>(*thread_server);
+                auto& thread = static_cast<ProxyServer<Thread>&>(*thread_server);
                 MP_LOG(*server.m_context.loop, Log::Debug)
                     << "IPC server post request  #" << req << " {" << thread.m_thread_context.thread_name << "}";
-                if (!thread.m_thread_context.waiter->post(std::move(invoke))) {
-                    MP_LOG(*server.m_context.loop, Log::Error)
-                        << "IPC server error request #" << req
-                        << " {" << thread.m_thread_context.thread_name << "}" << ", thread busy";
-                    throw std::runtime_error("thread busy");
-                }
+                return thread.template post<typename ServerContext::CallContext>(std::move(invoke));
             } else {
                 MP_LOG(*server.m_context.loop, Log::Error)
                     << "IPC server error request #" << req << ", missing thread to execute request";
                 throw std::runtime_error("invalid thread handle");
             }
-        })
-        // Wait for the invocation to finish before returning to the caller.
-        .then([invoke_wait = kj::mv(future.promise)]() mutable { return kj::mv(invoke_wait); });
+        });
 }
 } // namespace mp
 
