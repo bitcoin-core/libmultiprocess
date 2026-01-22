@@ -90,8 +90,16 @@ in crossPkgs.mkShell {
     cmakeBuild
     ninja
   ] ++ lib.optional (gcc != null) gcc ++ lib.optionals (!minimal) [
-    clang
+    # List clang-tools before clang so its wrapped tools take PATH priority
+    # (the first package in the list wins). Both packages provide the same
+    # tools (clangd, clang-tidy, clang-check, ...), but the clang package's
+    # copies are unwrapped and cannot find standard library headers like
+    # <cstddef>, while the clang-tools copies are wrapper scripts that add
+    # the C and C++ standard library include paths.
+    # https://web.archive.org/web/20260311024938/https://blog.kotatsu.dev/posts/2024-04-10-nixpkgs-clangd-missing-headers/
+    # https://github.com/NixOS/nixpkgs/issues/76486
     clang-tools
+    clang
     include-what-you-use
   ];
 
