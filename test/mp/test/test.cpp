@@ -211,6 +211,15 @@ KJ_TEST("Call FooInterface methods")
     KJ_EXPECT(mut.message == "init build pass call return read");
 
     KJ_EXPECT(foo->passFn([]{ return 10; }) == 10);
+
+    std::vector<FooDataRef> data_in;
+    data_in.push_back(std::make_shared<FooData>(FooData{'H', 'i'}));
+    data_in.push_back(nullptr);
+    std::vector<FooDataRef> data_out{foo->passDataPointers(data_in)};
+    KJ_EXPECT(data_out.size() == 2);
+    KJ_REQUIRE(data_out[0] != nullptr);
+    KJ_EXPECT(*data_out[0] == *data_in[0]);
+    KJ_EXPECT(!data_out[1]);
 }
 
 KJ_TEST("Call IPC method after client connection is closed")
