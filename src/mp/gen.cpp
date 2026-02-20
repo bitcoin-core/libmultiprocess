@@ -145,12 +145,8 @@ struct FieldList
     std::map<kj::StringPtr, int> field_idx; // name -> args index
     bool has_result = false;
 
-    void addField(const ::capnp::StructSchema::Field& schema_field, bool param)
+    void addField(const ::capnp::StructSchema::Field& schema_field, bool param, bool result)
     {
-        if (AnnotationExists(schema_field.getProto(), SKIP_ANNOTATION_ID)) {
-            return;
-        }
-
         auto field_name = schema_field.getProto().getName();
         auto inserted = field_idx.emplace(field_name, fields.size());
         if (inserted.second) {
@@ -160,7 +156,8 @@ struct FieldList
         if (param) {
             field.param = schema_field;
             field.param_is_set = true;
-        } else {
+        }
+        if (result) {
             field.result = schema_field;
             field.result_is_set = true;
         }
@@ -170,6 +167,9 @@ struct FieldList
             has_result = true;
         }
 
+        if (AnnotationExists(schema_field.getProto(), SKIP_ANNOTATION_ID)) {
+            field.skip = true;
+        }
         GetAnnotationText(schema_field.getProto(), EXCEPTION_ANNOTATION_ID, &field.exception);
 
         int32_t count = 1;
@@ -435,6 +435,13 @@ static void Generate(kj::StringPtr src_prefix,
 
         if (node.getProto().isStruct()) {
             const auto& struc = node.asStruct();
+
+            FieldList fields;
+            for (const auto schema_field : struc.getFields()) {
+                fields.addField(schema_field, true, true);
+            }
+            fields.mergeFields();
+
             std::ostringstream generic_name;
             generic_name << node_name;
             dec << "template<";
@@ -455,22 +462,18 @@ static void Generate(kj::StringPtr src_prefix,
             dec << "struct ProxyStruct<" << message_namespace << "::" << generic_name.str() << ">\n";
             dec << "{\n";
             dec << "    using Struct = " << message_namespace << "::" << generic_name.str() << ";\n";
-            for (const auto field : struc.getFields()) {
-                auto field_name = field.getProto().getName();
+            for (const auto& field : fields.fields) {
+                auto field_name = field.param.getProto().getName();
                 add_accessor(field_name);
-                dec << "    using " << Cap(field_name) << "Accessor = Accessor<" << base_name
-                    << "_fields::" << Cap(field_name) << ", FIELD_IN | FIELD_OUT";
-                if (BoxedType(field.getType())) dec << " | FIELD_BOXED";
-                dec << ">;\n";
+                dec << "    using " << Cap(field_name) << "Accessor = "
+                    << AccessorType(base_name, field) << ";\n";
             }
             dec << "    using Accessors = std::tuple<";
             size_t i = 0;
-            for (const auto field : struc.getFields()) {
-                if (AnnotationExists(field.getProto(), SKIP_ANNOTATION_ID)) {
-                    continue;
-                }
+            for (const auto& field : fields.fields) {
+                if (field.skip) continue;
                 if (i) dec << ", ";
-                dec << Cap(field.getProto().getName()) << "Accessor";
+                dec << Cap(field.param.getProto().getName()) << "Accessor";
                 ++i;
             }
             dec << ">;\n";
@@ -484,13 +487,11 @@ static void Generate(kj::StringPtr src_prefix,
                 inl << "public:\n";
                 inl << "    using Struct = " << message_namespace << "::" << node_name << ";\n";
                 size_t i = 0;
-                for (const auto field : struc.getFields()) {
-                    if (AnnotationExists(field.getProto(), SKIP_ANNOTATION_ID)) {
-                        continue;
-                    }
-                    auto field_name = field.getProto().getName();
+                for (const auto& field : fields.fields) {
+                    if (field.skip) continue;
+                    auto field_name = field.param.getProto().getName();
                     auto member_name = field_name;
-                    GetAnnotationText(field.getProto(), NAME_ANNOTATION_ID, &member_name);
+                    GetAnnotationText(field.param.getProto(), NAME_ANNOTATION_ID, &member_name);
                     inl << "    static decltype(auto) get(std::integral_constant<size_t, " << i << ">) { return "
                         << "&" << proxied_class_type << "::" << member_name << "; }\n";
                     ++i;
@@ -535,10 +536,10 @@ static void Generate(kj::StringPtr src_prefix,
 
                 FieldList fields;
                 for (const auto schema_field : method.getParamType().getFields()) {
-                    fields.addField(schema_field, true);
+                    fields.addField(schema_field, true, false);
                 }
                 for (const auto schema_field : method.getResultType().getFields()) {
-                    fields.addField(schema_field, false);
+                    fields.addField(schema_field, false, true);
                 }
                 fields.mergeFields();
 
