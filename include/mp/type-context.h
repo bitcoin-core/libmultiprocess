@@ -210,7 +210,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
     // connection is destroyed. (By default Cap'n Proto does not cancel requests
     // on disconnect, since it's possible clients might want to make requests
     // and immediately disconnect without waiting for results, but not want the
-    // the requests to be canceled.)
+    // requests to be canceled.)
     return server.m_context.connection->m_canceler.wrap(kj::mv(result));
 }
 } // namespace mp

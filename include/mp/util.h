@@ -331,7 +331,7 @@ void CancelMonitor::promiseDestroyed(CancelProbe& probe)
     // theory this method could be called when a promise was fulfilled or
     // rejected rather than canceled, but it's safe to assume that's not the
     // case because the CancelMonitor class is meant to be used inside code
-    // fulfilling or rejecting the promise and destroyed before doing these.
+    // fulfilling or rejecting the promise and destroyed before doing so.
     assert(m_probe == &probe);
     m_canceled = true;
     if (m_on_cancel) m_on_cancel();
