@@ -4,5 +4,5 @@ NIX_ARGS=(--arg enableLibcxx true --argstr libcxxSanitizers "Thread" --argstr ca
 export CXX=clang++
 export CXXFLAGS="-ggdb -Werror -Wall -Wextra -Wpedantic -Wthread-safety -Wno-unused-parameter -fsanitize=thread"
 CMAKE_ARGS=()
-BUILD_ARGS=(-k -j4)
+BUILD_ARGS=(-k)
 BUILD_TARGETS=(mptest)

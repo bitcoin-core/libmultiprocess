@@ -57,6 +57,7 @@ let
   clang-tools = llvm.clang-tools.override { inherit enableLibcxx; };
   cmakeHashes = {
     "3.12.4" = "sha256-UlVYS/0EPrcXViz/iULUcvHA5GecSUHYS6raqbKOMZQ=";
+    "4.1.1" = "sha256-sp9vGXM6oiS3djUHoQikJ+1Ixojh+vIrKcROHDBUkoI=";
   };
   cmakeBuild = if cmakeVersion == null then pkgs.cmake else (pkgs.cmake.overrideAttrs (old: {
     version = cmakeVersion;
@@ -67,11 +68,12 @@ let
     patches = [];
   })).override { isMinimalBuild = true; };
 in crossPkgs.mkShell {
-  buildInputs = [
+  buildInputs = lib.optionals (capnprotoVersion != "none") [
     capnproto
   ];
   nativeBuildInputs = with pkgs; [
     cmakeBuild
+    git
     include-what-you-use
     ninja
   ] ++ lib.optionals (!minimal) [
@@ -81,4 +83,7 @@ in crossPkgs.mkShell {
 
   # Tell IWYU where its libc++ mapping lives
   IWYU_MAPPING_FILE = if enableLibcxx then "${llvm.libcxx.dev}/include/c++/v1/libcxx.imp" else null;
+
+  # Avoid "SSL certificate problem: unable to get local issuer certificate" error during git clone in ci/scripts/ci.sh
+  NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
 }
