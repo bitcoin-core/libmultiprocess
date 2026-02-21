@@ -206,6 +206,28 @@ struct FieldList
     }
 };
 
+std::string AccessorType(kj::StringPtr base_name, const Field& field)
+{
+    const auto& f = field.param_is_set ? field.param : field.result;
+    const auto field_name = f.getProto().getName();
+    const auto field_type = f.getType();
+
+    std::ostringstream out;
+    out << "Accessor<" << base_name  << "_fields::" << Cap(field_name) << ", ";
+    if (!field.param_is_set) {
+        out << "FIELD_OUT";
+    } else if (field.result_is_set) {
+        out << "FIELD_IN | FIELD_OUT";
+    } else {
+        out << "FIELD_IN";
+    }
+    if (field.optional) out << " | FIELD_OPTIONAL";
+    if (field.requested) out << " | FIELD_REQUESTED";
+    if (BoxedType(field_type)) out << " | FIELD_BOXED";
+    out << ">";
+    return out.str();
+}
+
 // src_file is path to .capnp file to generate stub code from.
 //
 // src_prefix can be used to generate outputs in a different directory than the
@@ -539,20 +561,6 @@ static void Generate(kj::StringPtr src_prefix,
 
                     const auto& f = field.param_is_set ? field.param : field.result;
                     auto field_name = f.getProto().getName();
-                    auto field_type = f.getType();
-
-                    std::ostringstream field_flags;
-                    if (!field.param_is_set) {
-                        field_flags << "FIELD_OUT";
-                    } else if (field.result_is_set) {
-                        field_flags << "FIELD_IN | FIELD_OUT";
-                    } else {
-                        field_flags << "FIELD_IN";
-                    }
-                    if (field.optional) field_flags << " | FIELD_OPTIONAL";
-                    if (field.requested) field_flags << " | FIELD_REQUESTED";
-                    if (BoxedType(field_type)) field_flags << " | FIELD_BOXED";
-
                     add_accessor(field_name);
 
                     std::ostringstream fwd_args;
@@ -579,8 +587,7 @@ static void Generate(kj::StringPtr src_prefix,
                         client_invoke << "MakeClientParam<";
                     }
 
-                    client_invoke << "Accessor<" << base_name << "_fields::" << Cap(field_name) << ", "
-                                  << field_flags.str() << ">>(";
+                    client_invoke << AccessorType(base_name, field) << ">(";
 
                     if (field.retval) {
                         client_invoke << field_name;
@@ -596,8 +603,7 @@ static void Generate(kj::StringPtr src_prefix,
                     } else {
                         server_invoke_start << "MakeServerField<" << field.args;
                     }
-                    server_invoke_start << ", Accessor<" << base_name << "_fields::" << Cap(field_name) << ", "
-                                        << field_flags.str() << ">>(";
+                    server_invoke_start << ", " << AccessorType(base_name, field) << ">(";
                     server_invoke_end << ")";
                 }
 
