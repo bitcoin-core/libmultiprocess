@@ -261,4 +261,4 @@ add_dependencies(install-lib multiprocess)
 
 # Example and test subdirectories
 add_subdirectory(example EXCLUDE_FROM_ALL)
-add_subdirectory(test EXCLUDE_FROM_ALL)
+add_subdirectory(test)
