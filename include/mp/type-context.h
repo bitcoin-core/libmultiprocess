@@ -123,7 +123,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                             // it. So in addition to locking the mutex, the
                             // execution thread always checks request_canceled
                             // as well before accessing the structs.
-                            Lock{cancel_mutex};
+                            Lock cancel_lock{cancel_mutex};
                             server_context.request_canceled = true;
                         };
                         // Update requests_threads map if not canceled.
