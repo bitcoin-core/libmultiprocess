@@ -123,7 +123,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                             // it. So in addition to locking the mutex, the
                             // execution thread always checks request_canceled
                             // as well before accessing the structs.
-                            Lock{cancel_mutex};
+                            Lock cancel_lock{cancel_mutex};
                             server_context.request_canceled = true;
                         };
                         // Update requests_threads map if not canceled.
@@ -210,7 +210,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
     // connection is destroyed. (By default Cap'n Proto does not cancel requests
     // on disconnect, since it's possible clients might want to make requests
     // and immediately disconnect without waiting for results, but not want the
-    // the requests to be canceled.)
+    // requests to be canceled.)
     return server.m_context.connection->m_canceler.wrap(kj::mv(result));
 }
 } // namespace mp
