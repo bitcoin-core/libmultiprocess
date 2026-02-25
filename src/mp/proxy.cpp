@@ -38,7 +38,7 @@
 
 namespace mp {
 
-thread_local ThreadContext g_thread_context;
+thread_local ThreadContext g_thread_context; // NOLINT(bitcoin-nontrivial-threadlocal)
 
 void LoggingErrorHandler::taskFailed(kj::Exception&& exception)
 {
