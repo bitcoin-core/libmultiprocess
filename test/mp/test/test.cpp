@@ -97,7 +97,7 @@ public:
                   client_connection->m_rpc_system->bootstrap(ServerVatId().vat_id).castAs<messages::FooInterface>(),
                   client_connection.get(), /* destroy_connection= */ client_owns_connection);
               if (client_owns_connection) {
-                  client_connection.release();
+                  (void)client_connection.release();
               } else {
                   client_disconnect = [&] { loop.sync([&] { client_connection.reset(); }); };
               }
