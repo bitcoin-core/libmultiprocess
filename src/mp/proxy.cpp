@@ -416,8 +416,8 @@ kj::Promise<void> ProxyServer<ThreadMap>::makeThread(MakeThreadContext context)
     std::thread thread([&thread_context, from, this]() {
         g_thread_context.thread_name = ThreadName(m_connection.m_loop->m_exe_name) + " (from " + from + ")";
         g_thread_context.waiter = std::make_unique<Waiter>();
-        thread_context.set_value(&g_thread_context);
         Lock lock(g_thread_context.waiter->m_mutex);
+        thread_context.set_value(&g_thread_context);
         // Wait for shutdown signal from ProxyServer<Thread> destructor (signal
         // is just waiter getting set to null.)
         g_thread_context.waiter->wait(lock, [] { return !g_thread_context.waiter; });
