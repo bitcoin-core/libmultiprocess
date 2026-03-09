@@ -61,8 +61,6 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
         std::is_same<decltype(Accessor::get(server_context.call_context.getParams())), Context::Reader>::value,
         kj::Promise<typename ServerContext::CallContext>>::type
 {
-    const auto& params = server_context.call_context.getParams();
-    Context::Reader context_arg = Accessor::get(params);
     auto& server = server_context.proxy_server;
     int req = server_context.req;
     // Keep a reference to the ProxyServer instance by assigning it to the self
@@ -74,8 +72,6 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
     auto self = server.thisCap();
     auto invoke = [self = kj::mv(self), call_context = kj::mv(server_context.call_context), &server, req, fn, args...](CancelMonitor& cancel_monitor) mutable {
                 MP_LOG(*server.m_context.loop, Log::Debug) << "IPC server executing request #" << req;
-                const auto& params = call_context.getParams();
-                Context::Reader context_arg = Accessor::get(params);
                 ServerContext server_context{server, call_context, req};
                 {
                     // Before invoking the function, store a reference to the
@@ -127,6 +123,8 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                             server_context.request_canceled = true;
                         };
                         // Update requests_threads map if not canceled.
+                        const auto& params = call_context.getParams();
+                        Context::Reader context_arg = Accessor::get(params);
                         std::tie(request_thread, inserted) = SetThread(
                             GuardedRef{thread_context.waiter->m_mutex, request_threads}, server.m_context.connection,
                             [&] { return context_arg.getCallbackThread(); });
@@ -189,6 +187,8 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
     // Lookup Thread object specified by the client. The specified thread should
     // be a local Thread::Server object, but it needs to be looked up
     // asynchronously with getLocalServer().
+    const auto& params = server_context.call_context.getParams();
+    Context::Reader context_arg = Accessor::get(params);
     auto thread_client = context_arg.getThread();
     auto result = server.m_context.connection->m_threads.getLocalServer(thread_client)
         .then([&server, invoke = kj::mv(invoke), req](const kj::Maybe<Thread::Server&>& perhaps) mutable {
