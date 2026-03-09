@@ -495,6 +495,8 @@ ProxyClientBase<Interface, Impl>::ProxyClientBase(typename Interface::Client cli
     : m_client(std::move(client)), m_context(connection)
 
 {
+    MP_LOG(*m_context.loop, Log::Info) << "Creating " << CxxTypeName(*this) << " " << this;
+
     // Handler for the connection getting destroyed before this client object.
     auto disconnect_cb = m_context.connection->addSyncCleanup([this]() {
         // Release client capability by move-assigning to temporary.
@@ -551,13 +553,16 @@ ProxyClientBase<Interface, Impl>::ProxyClientBase(typename Interface::Client cli
 template <typename Interface, typename Impl>
 ProxyClientBase<Interface, Impl>::~ProxyClientBase() noexcept
 {
+    MP_LOG(*m_context.loop, Log::Info) << "Cleaning up " << CxxTypeName(*this) << " " << this;
     CleanupRun(m_context.cleanup_fns);
+    MP_LOG(*m_context.loop, Log::Info) << "Destroying " << CxxTypeName(*this) << " " << this;
 }
 
 template <typename Interface, typename Impl>
 ProxyServerBase<Interface, Impl>::ProxyServerBase(std::shared_ptr<Impl> impl, Connection& connection)
     : m_impl(std::move(impl)), m_context(&connection)
 {
+    MP_LOG(*m_context.loop, Log::Info) << "Creating " << CxxTypeName(*this) << " " << this;
     assert(m_impl);
 }
 
@@ -576,6 +581,7 @@ ProxyServerBase<Interface, Impl>::ProxyServerBase(std::shared_ptr<Impl> impl, Co
 template <typename Interface, typename Impl>
 ProxyServerBase<Interface, Impl>::~ProxyServerBase()
 {
+    MP_LOG(*m_context.loop, Log::Info) << "Cleaning up " << CxxTypeName(*this) << " " << this;
     if (m_impl) {
         // If impl is non-null at this point, it means no client is waiting for
         // the m_impl server object to be destroyed synchronously. This can
@@ -602,6 +608,7 @@ ProxyServerBase<Interface, Impl>::~ProxyServerBase()
         });
     }
     assert(m_context.cleanup_fns.empty());
+    MP_LOG(*m_context.loop, Log::Info) << "Destroying " << CxxTypeName(*this) << " " << this;
 }
 
 //! If the capnp interface defined a special "destroy" method, as described the

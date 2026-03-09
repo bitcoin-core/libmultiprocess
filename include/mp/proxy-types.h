@@ -595,16 +595,16 @@ template <typename Client>
 void clientDestroy(Client& client)
 {
     if (client.m_context.connection) {
-        MP_LOG(*client.m_context.loop, Log::Info) << "IPC client destroy " << typeid(client).name();
+        MP_LOG(*client.m_context.loop, Log::Info) << "IPC client destroy " << CxxTypeName(client);
     } else {
-        KJ_LOG(INFO, "IPC interrupted client destroy", typeid(client).name());
+        KJ_LOG(INFO, "IPC interrupted client destroy", CxxTypeName(client));
     }
 }
 
 template <typename Server>
 void serverDestroy(Server& server)
 {
-    MP_LOG(*server.m_context.loop, Log::Info) << "IPC server destroy " << typeid(server).name();
+    MP_LOG(*server.m_context.loop, Log::Info) << "IPC server destroy " << CxxTypeName(server);
 }
 
 //! Entry point called by generated client code that looks like:
@@ -740,6 +740,7 @@ kj::Promise<void> serverInvoke(Server& server, CallContext& call_context, Fn fn)
         using ServerContext = ServerInvokeContext<Server, CallContext>;
         using ArgList = typename ProxyClientMethodTraits<typename Params::Reads>::Params;
         ServerContext server_context{server, call_context, req};
+        auto self = server.thisCap();
         // ReplaceVoid is used to support fn.invoke implementations that
         // execute asynchronously and return promises, as well as
         // implementations that execute synchronously and return void. The
@@ -749,10 +750,17 @@ kj::Promise<void> serverInvoke(Server& server, CallContext& call_context, Fn fn)
         // and waiting for it to complete.
         return ReplaceVoid([&]() { return fn.invoke(server_context, ArgList()); },
             [&]() { return kj::Promise<CallContext>(kj::mv(call_context)); })
-            .then([&server, req](CallContext call_context) {
+            .then([&server, req, self](CallContext call_context) {
                 MP_LOG(*server.m_context.loop, Log::Debug) << "IPC server send response #" << req << " " << TypeName<Results>();
                 MP_LOG(*server.m_context.loop, Log::Trace) << "response data: "
                     << LogEscape(call_context.getResults().toString(), server.m_context.loop->m_log_opts.max_chars);
+            }).catch_([&server, req, self](::kj::Exception&& e) -> kj::Promise<void> {
+                // Call failed for some reason. Cap'n Proto will try to send
+                // this error to the client as well, but it is good to log the
+                // failure early here and include the request number.
+                MP_LOG(*server.m_context.loop, Log::Error) << "IPC server error request #" << req << " " << TypeName<Results>()
+                    << " " << kj::str("kj::Exception: ", e.getDescription()).cStr();
+                return kj::mv(e);
             });
     } catch (const std::exception& e) {
         MP_LOG(*server.m_context.loop, Log::Error) << "IPC server unhandled exception: " << e.what();

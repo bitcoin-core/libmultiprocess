@@ -205,6 +205,40 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                     << "IPC server error request #" << req << ", missing thread to execute request";
                 throw std::runtime_error("invalid thread handle");
             }
+        }, [&server, req](::kj::Exception&& e) -> kj::Promise<typename ServerContext::CallContext> {
+            // If you see the error "(remote):0: failed: remote exception:
+            // Called null capability" here, it probably means your Init class
+            // is missing a declaration like:
+            //
+            //   construct @0 (threadMap: Proxy.ThreadMap) -> (threadMap :Proxy.ThreadMap);
+            //
+            // which passes a ThreadMap reference from the client to the server,
+            // allowing the server to create threads to run IPC calls on the
+            // client, and also returns a ThreadMap reference from the server to
+            // the client, allowing the client to create threads on the server.
+            // (Typically the latter ThreadMap is used more often because there
+            // are more client-to-server calls.)
+            //
+            // If the other side of the connection did not previously get a
+            // ThreadMap reference from this side of the connection, when the
+            // other side calls `m_thread_map.makeThreadRequest()` in
+            // `BuildField` above, `m_thread_map` will be null, but that call
+            // will not fail immediately due to Cap'n Proto's request pipelining
+            // and delayed execution. Instead that call will return an invalid
+            // Thread reference, and when that reference is passed to this side
+            // of the connection as `thread_client` above, the
+            // `getLocalServer(thread_client)` call there will be the first
+            // thing to overtly fail, leading to an error here.
+            //
+            // Potentially there are also other things that could cause errors
+            // here, but this is the most likely cause.
+            //
+            // The log statement here is not strictly necessary since the same
+            // exception will also be logged in serverInvoke, but this logging
+            // may provide extra context that could be helpful for debugging.
+            MP_LOG(*server.m_context.loop, Log::Info)
+                << "IPC server error request #" << req << " CapabilityServerSet<Thread>::getLocalServer call failed, did you forget to provide a ThreadMap to the client prior to this IPC call?";
+            return kj::mv(e);
         });
     // Use connection m_canceler object to cancel the result promise if the
     // connection is destroyed. (By default Cap'n Proto does not cancel requests
