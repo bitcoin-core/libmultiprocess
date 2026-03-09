@@ -76,8 +76,6 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                 MP_LOG(*server.m_context.loop, Log::Debug) << "IPC server executing request #" << req;
                 EventLoop& loop = *server.m_context.loop;
                 if (loop.testing_hook_async_request_start) loop.testing_hook_async_request_start();
-                const auto& params = call_context.getParams();
-                Context::Reader context_arg = Accessor::get(params);
                 ServerContext server_context{server, call_context, req};
                 {
                     // Before invoking the function, store a reference to the
@@ -128,10 +126,13 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                             Lock cancel_lock{cancel_mutex};
                             server_context.request_canceled = true;
                         };
-                        // Update requests_threads map if not canceled.
+                        // Update requests_threads map if not canceled. We know
+                        // the request is not canceled currently because
+                        // cancel_monitor.m_canceled was checked above and this
+                        // code is running on the event loop thread.
                         std::tie(request_thread, inserted) = SetThread(
                             GuardedRef{thread_context.waiter->m_mutex, request_threads}, server.m_context.connection,
-                            [&] { return context_arg.getCallbackThread(); });
+                            [&] { return Accessor::get(call_context.getParams()).getCallbackThread(); });
                     });
 
                     // If an entry was inserted into the request_threads map,
