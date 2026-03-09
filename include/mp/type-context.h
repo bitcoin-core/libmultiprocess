@@ -61,8 +61,6 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
         std::is_same<decltype(Accessor::get(server_context.call_context.getParams())), Context::Reader>::value,
         kj::Promise<typename ServerContext::CallContext>>::type
 {
-    const auto& params = server_context.call_context.getParams();
-    Context::Reader context_arg = Accessor::get(params);
     auto& server = server_context.proxy_server;
     int req = server_context.req;
     // Keep a reference to the ProxyServer instance by assigning it to the self
@@ -202,6 +200,8 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
     // Lookup Thread object specified by the client. The specified thread should
     // be a local Thread::Server object, but it needs to be looked up
     // asynchronously with getLocalServer().
+    const auto& params = server_context.call_context.getParams();
+    Context::Reader context_arg = Accessor::get(params);
     auto thread_client = context_arg.getThread();
     auto result = server.m_context.connection->m_threads.getLocalServer(thread_client)
         .then([&server, invoke = kj::mv(invoke), req](const kj::Maybe<Thread::Server&>& perhaps) mutable {
