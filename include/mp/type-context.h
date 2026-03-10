@@ -151,6 +151,15 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                         // the disconnect handler trying to destroy the thread
                         // client object.
                         server.m_context.loop->sync([&] {
+                            // Clear cancellation callback. At this point the
+                            // method invocation finished and the result is
+                            // either being returned, or discarded if a
+                            // cancellation happened. So we do not need to be
+                            // notified of cancellations after this point. Also
+                            // we do not want to be notified because
+                            // cancel_mutex and server_context could be out of
+                            // scope when it happens.
+                            cancel_monitor.m_on_cancel = nullptr;
                             auto self_dispose{kj::mv(self)};
                             if (erase_thread) {
                             // Look up the thread again without using existing
