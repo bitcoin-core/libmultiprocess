@@ -368,6 +368,36 @@ KJ_TEST("Worker thread destroyed before it is initialized")
     KJ_EXPECT(disconnected);
 }
 
+KJ_TEST("Calling async IPC method, with server disconnect racing the call")
+{
+    // Regression test for bitcoin/bitcoin#34777 heap-use-after-free where
+    // an async request is canceled before it starts to execute.
+    //
+    // Use testing_hook_async_request_start to trigger a disconnect from the
+    // worker thread as soon as it begins to execute an async request. Without
+    // the bugfix, the worker thread would trigger a SIGSEGV after this by
+    // calling call_context.getParams().
+    TestSetup setup;
+    ProxyClient<messages::FooInterface>* foo = setup.client.get();
+    foo->initThreadMap();
+    setup.server->m_impl->m_fn = [] {};
+
+    EventLoop& loop = *setup.server->m_context.connection->m_loop;
+    loop.testing_hook_async_request_start = [&] {
+        setup.server_disconnect();
+        // Sleep is necessary to let the event loop fully clean up after the
+        // disconnect and trigger the SIGSEGV.
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    };
+
+    try {
+        foo->callFnAsync();
+        KJ_EXPECT(false);
+    } catch (const std::runtime_error& e) {
+        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
+    }
+}
+
 KJ_TEST("Make simultaneous IPC calls on single remote thread")
 {
     TestSetup setup;

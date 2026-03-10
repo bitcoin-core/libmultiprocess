@@ -74,6 +74,8 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
     auto self = server.thisCap();
     auto invoke = [self = kj::mv(self), call_context = kj::mv(server_context.call_context), &server, req, fn, args...](CancelMonitor& cancel_monitor) mutable {
                 MP_LOG(*server.m_context.loop, Log::Debug) << "IPC server executing request #" << req;
+                EventLoop& loop = *server.m_context.loop;
+                if (loop.testing_hook_async_request_start) loop.testing_hook_async_request_start();
                 const auto& params = call_context.getParams();
                 Context::Reader context_arg = Accessor::get(params);
                 ServerContext server_context{server, call_context, req};
