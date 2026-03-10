@@ -348,6 +348,11 @@ public:
     //! context is set up and thread_context promise is fulfilled, but before it
     //! starts waiting for requests.
     std::function<void()> testing_hook_makethread_created;
+
+    //! Hook called on the worker thread when it starts to execute an async
+    //! request. Used by tests to control timing or inject behavior at this
+    //! point in execution.
+    std::function<void()> testing_hook_async_request_start;
 };
 
 //! Single element task queue used to handle recursive capnp calls. (If the
