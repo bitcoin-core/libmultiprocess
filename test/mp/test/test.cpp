@@ -325,6 +325,43 @@ KJ_TEST("Calling IPC method, disconnecting and blocking during the call")
     signal.set_value();
 }
 
+KJ_TEST("Calling async IPC method, with server disconnect racing the call")
+{
+    // Regression test for bitcoin/bitcoin#34777 (heap-use-after-free where
+    // getParams() was called on the worker thread after the event loop thread
+    // freed the RpcCallContext on disconnect). The fix moves getParams() inside
+    // loop->sync() so it always runs on the event loop thread.
+    //
+    // Use testing_hook_before_sync to pause the worker thread just before it
+    // enters loop->sync(), then disconnect the server from a separate thread.
+    TestSetup setup;
+    ProxyClient<messages::FooInterface>* foo = setup.client.get();
+    foo->initThreadMap();
+    setup.server->m_impl->m_fn = [] {};
+
+    std::promise<void> worker_ready;
+    std::promise<void> disconnect_done;
+    auto disconnect_done_future = disconnect_done.get_future().share();
+    setup.server->m_context.testing_hook_before_sync = [&worker_ready, disconnect_done_future] {
+        worker_ready.set_value();
+        disconnect_done_future.wait();
+    };
+
+    std::thread disconnect_thread{[&] {
+        worker_ready.get_future().wait();
+        setup.server_disconnect();
+        disconnect_done.set_value();
+    }};
+
+    try {
+        foo->callFnAsync();
+        KJ_EXPECT(false);
+    } catch (const std::runtime_error& e) {
+        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
+    }
+    disconnect_thread.join();
+}
+
 KJ_TEST("Make simultaneous IPC calls on single remote thread")
 {
     TestSetup setup;

@@ -72,6 +72,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
     auto self = server.thisCap();
     auto invoke = [self = kj::mv(self), call_context = kj::mv(server_context.call_context), &server, req, fn, args...](CancelMonitor& cancel_monitor) mutable {
                 MP_LOG(*server.m_context.loop, Log::Debug) << "IPC server executing request #" << req;
+                if (server.m_context.testing_hook_before_sync) server.m_context.testing_hook_before_sync();
                 ServerContext server_context{server, call_context, req};
                 {
                     // Before invoking the function, store a reference to the
