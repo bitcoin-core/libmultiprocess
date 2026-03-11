@@ -1,0 +1,93 @@
+name: Bitcoin Core CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bitcoin-ci-matrix:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeout-minutes }}
+    if: ${{ github.repository_owner == 'bitcoin-core' }}
+
+    env:
+      CI_FAILFAST_TEST_LEAVE_DANGLING: 1
+      DANGER_CI_ON_HOST_FOLDERS: 1
+      FILE_ENV: ${{ matrix.file-env }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: 'ASan'
+            timeout-minutes: 120
+            file-env: './ci/test/00_setup_env_native_asan.sh'
+          - name: 'fuzz'
+            timeout-minutes: 240
+            file-env: './ci/test/00_setup_env_native_fuzz.sh'
+          - name: 'TSan'
+            timeout-minutes: 120
+            file-env: './ci/test/00_setup_env_native_tsan.sh'
+          - name: 'MSan'
+            timeout-minutes: 120
+            file-env: './ci/test/00_setup_env_native_msan.sh'
+
+    steps:
+      - name: Checkout Bitcoin Core
+        uses: actions/checkout@v6
+        with:
+          repository: bitcoin/bitcoin
+          fetch-depth: 1
+
+      - name: Show Bitcoin Core revision
+        run: |
+          git rev-parse HEAD
+          git log -1 --oneline
+
+      - name: Checkout libmultiprocess
+        uses: actions/checkout@v6
+        with:
+          path: libmultiprocess
+          fetch-depth: 1
+
+      - name: Replace vendored libmultiprocess subtree
+        run: |
+          set -euxo pipefail
+          rsync -a --delete \
+            --exclude=.git \
+            ./libmultiprocess/ \
+            ./src/ipc/libmultiprocess/
+
+      - name: Clear unnecessary files on bloated GHA VM
+        uses: bitcoin/bitcoin/.github/actions/clear-files@master
+
+      - name: Configure environment
+        uses: bitcoin/bitcoin/.github/actions/configure-environment@master
+
+      - name: Restore caches
+        id: restore-cache
+        uses: bitcoin/bitcoin/.github/actions/restore-caches@master
+
+      - name: Configure Docker
+        uses: bitcoin/bitcoin/.github/actions/configure-docker@master
+        with:
+          cache-provider: 'gha'
+
+      - name: Enable bpfcc script for ASan job
+        if: ${{ matrix.file-env == './ci/test/00_setup_env_native_asan.sh' }}
+        run: sed -i "s|\${INSTALL_BCC_TRACING_TOOLS}|true|g" ./ci/test/00_setup_env_native_asan.sh
+
+      - name: Set mmap_rnd_bits for TSan/MSan jobs
+        if: ${{ matrix.file-env == './ci/test/00_setup_env_native_tsan.sh' || matrix.file-env == './ci/test/00_setup_env_native_msan.sh' }}
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      - name: Run Bitcoin Core CI script
+        run: ./ci/test_run_all.sh
+
+      - name: Save caches
+        uses: bitcoin/bitcoin/.github/actions/save-caches@master
