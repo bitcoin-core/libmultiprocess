@@ -19,12 +19,16 @@ concurrency:
 env:
   BITCOIN_REPO: bitcoin/bitcoin
   LLVM_VERSION: 22
+  LIBCXX_DIR: /tmp/libcxx-build/
   ASAN_UBSAN_UNIT_TEST_RUNS: 1
   ASAN_UBSAN_FUNCTIONAL_TEST_RUNS: 1
   ASAN_UBSAN_NPROC_MULTIPLIER: 1
   MACOS_UNIT_TEST_RUNS: 1
   MACOS_FUNCTIONAL_TEST_RUNS: 1
   MACOS_NPROC_MULTIPLIER: 1
+  TSAN_UNIT_TEST_RUNS: 1
+  TSAN_FUNCTIONAL_TEST_RUNS: 1
+  TSAN_NPROC_MULTIPLIER: 1
 
 jobs:
   bitcoin-core:
@@ -200,3 +204,218 @@ jobs:
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ matrix.name }}-${{ github.ref }}-${{ github.sha }}
+
+  bitcoin-core-tsan:
+    name: TSan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      CCACHE_MAXSIZE: 400M
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      LIBCXX_FLAGS: >-
+        -fsanitize=thread
+        -nostdinc++
+        -nostdlib++
+        -isystem /tmp/libcxx-build/include/c++/v1
+        -L/tmp/libcxx-build/lib
+        -Wl,-rpath,/tmp/libcxx-build/lib
+        -lc++
+        -lc++abi
+        -lpthread
+        -Wno-unused-command-line-argument
+      TSAN_OPTIONS: suppressions=${{ github.workspace }}/test/sanitizer_suppressions/tsan:halt_on_error=1:second_deadlock_stack=1
+
+    steps:
+      - name: Checkout Bitcoin Core
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.BITCOIN_REPO }}
+          fetch-depth: 1
+
+      - name: Add LLVM apt repository
+        run: |
+          curl -s "https://apt.llvm.org/llvm-snapshot.gpg.key" | sudo tee "/etc/apt/trusted.gpg.d/apt.llvm.org.asc" > /dev/null
+          source /etc/os-release
+          echo "deb http://apt.llvm.org/${VERSION_CODENAME}/ llvm-toolchain-${VERSION_CODENAME}-${LLVM_VERSION} main" | sudo tee "/etc/apt/sources.list.d/llvm.list"
+          sudo apt-get update
+
+      - name: Install packages
+        run: |
+          sudo apt-get install --no-install-recommends -y \
+            ccache \
+            "clang-${LLVM_VERSION}" \
+            "llvm-${LLVM_VERSION}" \
+            "llvm-${LLVM_VERSION}-dev" \
+            "libclang-${LLVM_VERSION}-dev" \
+            "libclang-rt-${LLVM_VERSION}-dev" \
+            ninja-build \
+            pkgconf \
+            python3-pip \
+            bison
+          sudo update-alternatives --install /usr/bin/clang++ clang++ "/usr/bin/clang++-${LLVM_VERSION}" 100
+          sudo update-alternatives --install /usr/bin/clang clang "/usr/bin/clang-${LLVM_VERSION}" 100
+          sudo update-alternatives --install /usr/bin/llvm-symbolizer llvm-symbolizer "/usr/bin/llvm-symbolizer-${LLVM_VERSION}" 100
+          sudo update-alternatives --set clang "/usr/bin/clang-${LLVM_VERSION}"
+          sudo update-alternatives --set clang++ "/usr/bin/clang++-${LLVM_VERSION}"
+          sudo update-alternatives --set llvm-symbolizer "/usr/bin/llvm-symbolizer-${LLVM_VERSION}"
+          pip3 install --break-system-packages pycapnp
+
+      - name: Determine parallelism
+        run: |
+          if command -v nproc >/dev/null 2>&1; then
+            available_nproc="$(nproc)"
+          else
+            available_nproc="$(sysctl -n hw.logicalcpu)"
+          fi
+          echo "BUILD_PARALLEL=${available_nproc}" >> "$GITHUB_ENV"
+          echo "PARALLEL=$((available_nproc * TSAN_NPROC_MULTIPLIER))" >> "$GITHUB_ENV"
+
+      - name: Restore instrumented libc++ cache
+        id: libcxx-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LIBCXX_DIR }}
+          key: libcxx-Thread-llvmorg-${{ env.LLVM_VERSION }}.1.0
+
+      - name: Build instrumented libc++
+        if: steps.libcxx-cache.outputs.cache-hit != 'true'
+        run: |
+          export PATH="/usr/lib/llvm-${LLVM_VERSION}/bin:$PATH"
+          ls -l /usr/bin/clang /usr/bin/clang++ /usr/bin/llvm-symbolizer
+          which clang clang++ llvm-symbolizer
+          clang --version
+          clang++ --version
+          "/usr/bin/clang-${LLVM_VERSION}" --version
+          "/usr/bin/clang++-${LLVM_VERSION}" --version
+          git clone --depth=1 https://github.com/llvm/llvm-project -b "llvmorg-${LLVM_VERSION}.1.0" /tmp/llvm-project
+          cmake -G Ninja -B "$LIBCXX_DIR" \
+            -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_USE_SANITIZER=Thread \
+            -DCMAKE_C_COMPILER="/usr/bin/clang-${LLVM_VERSION}" \
+            -DCMAKE_CXX_COMPILER="/usr/bin/clang++-${LLVM_VERSION}" \
+            -DLLVM_TARGETS_TO_BUILD=Native \
+            -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF \
+            -DLIBCXX_INCLUDE_TESTS=OFF \
+            -DLIBCXXABI_INCLUDE_TESTS=OFF \
+            -DLIBUNWIND_INCLUDE_TESTS=OFF \
+            -DLIBCXXABI_USE_LLVM_UNWINDER=OFF \
+            -S /tmp/llvm-project/runtimes
+          grep -E 'CMAKE_(C|CXX)_COMPILER' "$LIBCXX_DIR/CMakeCache.txt"
+          ninja -C "$LIBCXX_DIR" -j "${BUILD_PARALLEL}" -v
+          rm -rf /tmp/llvm-project
+
+      - name: Determine host
+        id: host
+        run: echo "host=$(./depends/config.guess)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore depends cache
+        id: depends-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            depends/built
+            depends/${{ steps.host.outputs.host }}
+          key: depends-tsan-${{ hashFiles('depends/packages/*.mk') }}-${{ env.LLVM_VERSION }}
+
+      - name: Build depends (stage 1, without IPC)
+        if: steps.depends-cache.outputs.cache-hit != 'true'
+        run: |
+          make -C depends -j "${BUILD_PARALLEL}" \
+            CC=clang \
+            CXX=clang++ \
+            CXXFLAGS="${LIBCXX_FLAGS}" \
+            NO_QT=1 \
+            NO_ZMQ=1 \
+            NO_USDT=1 \
+            NO_QR=1 \
+            NO_IPC=1
+
+      - name: Save depends cache
+        uses: actions/cache/save@v4
+        if: steps.depends-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            depends/built
+            depends/${{ steps.host.outputs.host }}
+          key: depends-tsan-${{ hashFiles('depends/packages/*.mk') }}-${{ env.LLVM_VERSION }}
+
+      - name: Checkout libmultiprocess
+        uses: actions/checkout@v4
+        with:
+          path: _libmultiprocess
+
+      - name: Replace libmultiprocess subtree
+        run: |
+          rm -rf src/ipc/libmultiprocess
+          mv _libmultiprocess src/ipc/libmultiprocess
+
+      - name: Build depends (stage 2, IPC packages including libmultiprocess)
+        run: |
+          make -C depends -j "${BUILD_PARALLEL}" \
+            CC=clang \
+            CXX=clang++ \
+            CXXFLAGS="${LIBCXX_FLAGS}" \
+            NO_QT=1 \
+            NO_ZMQ=1 \
+            NO_USDT=1 \
+            NO_QR=1
+
+      - name: Restore ccache
+        id: ccache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-TSan-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            ccache-TSan-${{ github.ref }}-
+            ccache-TSan-
+
+      - name: Reset ccache stats
+        run: |
+          which ccache
+          ccache --version
+          ccache --zero-stats
+
+      - name: CMake configure
+        run: |
+          cmake -S . -B build \
+            --preset=dev-mode \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_GUI=OFF \
+            -DBUILD_GUI_TESTS=OFF \
+            -DWITH_ZMQ=OFF \
+            -DWITH_USDT=OFF \
+            -DBUILD_BENCH=OFF \
+            -DBUILD_FUZZ_BINARY=OFF \
+            -DWITH_QRENCODE=OFF \
+            -DSANITIZERS=thread \
+            -DAPPEND_CPPFLAGS='-DARENA_DEBUG -DDEBUG_LOCKCONTENTION -D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES' \
+            -DCMAKE_TOOLCHAIN_FILE=depends/${{ steps.host.outputs.host }}/toolchain.cmake \
+            -G Ninja
+
+      - name: Build
+        run: cmake --build build --parallel "${BUILD_PARALLEL}"
+
+      - name: Show ccache stats
+        run: ccache --show-stats
+
+      - name: Run IPC unit tests
+        run: |
+          LD_LIBRARY_PATH="depends/${{ steps.host.outputs.host }}/lib" \
+          src/ipc/libmultiprocess/ci/scripts/run_bitcoin_core_unit_tests.sh "${TSAN_UNIT_TEST_RUNS}"
+
+      - name: Run IPC functional tests
+        env:
+          CI_FAILFAST_TEST_LEAVE_DANGLING: 1
+        run: |
+          LD_LIBRARY_PATH="depends/${{ steps.host.outputs.host }}/lib" \
+          src/ipc/libmultiprocess/ci/scripts/run_bitcoin_core_functional_tests.sh "${TSAN_FUNCTIONAL_TEST_RUNS}" "${PARALLEL}" "10"
+
+      - name: Save ccache
+        uses: actions/cache/save@v4
+        if: github.ref == 'refs/heads/master' || steps.ccache-restore.outputs.cache-hit != 'true'
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-TSan-${{ github.ref }}-${{ github.sha }}
