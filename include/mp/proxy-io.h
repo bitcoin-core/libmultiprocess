@@ -353,6 +353,9 @@ public:
     //! request. Used by tests to control timing or inject behavior at this
     //! point in execution.
     std::function<void()> testing_hook_async_request_start;
+
+    //! Hook called on the worker thread just before returning results.
+    std::function<void()> testing_hook_async_request_done;
 };
 
 //! Single element task queue used to handle recursive capnp calls. (If the

@@ -183,6 +183,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                     }
                     // End of scope: if KJ_DEFER was reached, it runs here
                 }
+                if (loop.testing_hook_async_request_done) loop.testing_hook_async_request_done();
                 return call_context;
             };
 
