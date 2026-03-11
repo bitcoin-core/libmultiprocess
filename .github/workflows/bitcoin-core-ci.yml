@@ -1,0 +1,202 @@
+# Copyright (c) The Bitcoin Core developers
+# Distributed under the MIT software license, see the accompanying
+# file COPYING or https://opensource.org/license/mit.
+
+# Test libmultiprocess inside Bitcoin Core by replacing the subtree copy
+# with the version from this PR, then building and running IPC-related
+# unit & functional tests.
+
+name: Bitcoin Core CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BITCOIN_REPO: bitcoin/bitcoin
+  LLVM_VERSION: 22
+  ASAN_UBSAN_UNIT_TEST_RUNS: 1
+  ASAN_UBSAN_FUNCTIONAL_TEST_RUNS: 1
+  ASAN_UBSAN_NPROC_MULTIPLIER: 1
+  MACOS_UNIT_TEST_RUNS: 1
+  MACOS_FUNCTIONAL_TEST_RUNS: 1
+  MACOS_NPROC_MULTIPLIER: 1
+
+jobs:
+  bitcoin-core:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: 'ASan + UBSan'
+            runner: ubuntu-24.04
+            apt-llvm: true
+            packages: >-
+              ccache
+              clang-22
+              llvm-22
+              libclang-rt-22-dev
+              libevent-dev
+              libboost-dev
+              libsqlite3-dev
+              libcapnp-dev
+              capnproto
+              ninja-build
+              pkgconf
+              python3-pip
+            pip-packages: --break-system-packages pycapnp
+            cmake-args: >-
+              -DSANITIZERS=address,float-divide-by-zero,integer,undefined
+              -DCMAKE_C_COMPILER=clang
+              -DCMAKE_CXX_COMPILER=clang++
+              -DCMAKE_C_FLAGS='-ftrivial-auto-var-init=pattern'
+              -DCMAKE_CXX_FLAGS='-ftrivial-auto-var-init=pattern'
+
+          - name: 'macOS'
+            runner: macos-15
+            brew-packages: ccache capnp boost libevent sqlite pkgconf ninja
+            pip-packages: --break-system-packages pycapnp
+            cmake-args: >-
+              -DREDUCE_EXPORTS=ON
+
+    env:
+      CCACHE_MAXSIZE: 400M
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+
+    steps:
+      - name: Checkout Bitcoin Core
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.BITCOIN_REPO }}
+          fetch-depth: 1
+
+      - name: Checkout libmultiprocess
+        uses: actions/checkout@v4
+        with:
+          path: _libmultiprocess
+
+      - name: Replace libmultiprocess subtree
+        run: |
+          rm -rf src/ipc/libmultiprocess
+          mv _libmultiprocess src/ipc/libmultiprocess
+
+      - name: Add LLVM apt repository
+        if: matrix.apt-llvm
+        run: |
+          curl -s "https://apt.llvm.org/llvm-snapshot.gpg.key" | sudo tee "/etc/apt/trusted.gpg.d/apt.llvm.org.asc" > /dev/null
+          source /etc/os-release
+          echo "deb http://apt.llvm.org/${VERSION_CODENAME}/ llvm-toolchain-${VERSION_CODENAME}-${LLVM_VERSION} main" | sudo tee "/etc/apt/sources.list.d/llvm.list"
+          sudo apt-get update
+
+      - name: Install APT packages
+        if: matrix.packages
+        run: |
+          sudo apt-get install --no-install-recommends -y ${{ matrix.packages }}
+          sudo update-alternatives --install /usr/bin/clang++ clang++ "/usr/bin/clang++-${LLVM_VERSION}" 100
+          sudo update-alternatives --install /usr/bin/clang clang "/usr/bin/clang-${LLVM_VERSION}" 100
+          sudo update-alternatives --install /usr/bin/llvm-symbolizer llvm-symbolizer "/usr/bin/llvm-symbolizer-${LLVM_VERSION}" 100
+
+      - name: Install Homebrew packages
+        if: matrix.brew-packages
+        env:
+          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
+        run: |
+          brew install --quiet ${{ matrix.brew-packages }}
+
+      - name: Install pip packages
+        if: matrix.pip-packages
+        run: pip3 install ${{ matrix.pip-packages }}
+
+      - name: Determine parallelism
+        run: |
+          if command -v nproc >/dev/null 2>&1; then
+            available_nproc="$(nproc)"
+          else
+            available_nproc="$(sysctl -n hw.logicalcpu)"
+          fi
+          echo "BUILD_PARALLEL=${available_nproc}" >> "$GITHUB_ENV"
+          if [[ "${{ matrix.name }}" == 'ASan + UBSan' ]]; then
+            nproc_multiplier="${ASAN_UBSAN_NPROC_MULTIPLIER}"
+          else
+            nproc_multiplier="${MACOS_NPROC_MULTIPLIER}"
+          fi
+          echo "PARALLEL=$((available_nproc * nproc_multiplier))" >> "$GITHUB_ENV"
+
+      - name: Restore ccache
+        id: ccache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ matrix.name }}-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ matrix.name }}-${{ github.ref }}-
+            ccache-${{ matrix.name }}-
+
+      - name: Reset ccache stats
+        if: matrix.packages || matrix.brew-packages
+        run: |
+          which ccache
+          ccache --version
+          ccache --zero-stats
+
+      - name: CMake configure
+        run: |
+          cmake -S . -B build \
+            --preset=dev-mode \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_GUI=OFF \
+            -DBUILD_GUI_TESTS=OFF \
+            -DWITH_ZMQ=OFF \
+            -DWITH_USDT=OFF \
+            -DBUILD_BENCH=OFF \
+            -DBUILD_FUZZ_BINARY=OFF \
+            -DWITH_QRENCODE=OFF \
+            -G Ninja \
+            ${{ matrix.cmake-args }}
+
+      - name: Build
+        run: cmake --build build --parallel "${BUILD_PARALLEL}"
+
+      - name: Show ccache stats
+        if: matrix.packages || matrix.brew-packages
+        run: ccache --show-stats
+
+      - name: Run IPC unit tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/test/sanitizer_suppressions/lsan
+          UBSAN_OPTIONS: suppressions=${{ github.workspace }}/test/sanitizer_suppressions/ubsan:print_stacktrace=1:halt_on_error=1:report_error_type=1
+        run: |
+          if [[ "${{ matrix.name }}" == 'ASan + UBSan' ]]; then
+            src/ipc/libmultiprocess/ci/scripts/run_bitcoin_core_unit_tests.sh "${ASAN_UBSAN_UNIT_TEST_RUNS}"
+          else
+            src/ipc/libmultiprocess/ci/scripts/run_bitcoin_core_unit_tests.sh "${MACOS_UNIT_TEST_RUNS}"
+          fi
+
+      - name: Run IPC functional tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/test/sanitizer_suppressions/lsan
+          UBSAN_OPTIONS: suppressions=${{ github.workspace }}/test/sanitizer_suppressions/ubsan:print_stacktrace=1:halt_on_error=1:report_error_type=1
+          CI_FAILFAST_TEST_LEAVE_DANGLING: 1
+        run: |
+          if [[ "${{ matrix.name }}" == 'ASan + UBSan' ]]; then
+            src/ipc/libmultiprocess/ci/scripts/run_bitcoin_core_functional_tests.sh "${ASAN_UBSAN_FUNCTIONAL_TEST_RUNS}" "${PARALLEL}" "4"
+          else
+            src/ipc/libmultiprocess/ci/scripts/run_bitcoin_core_functional_tests.sh "${MACOS_FUNCTIONAL_TEST_RUNS}" "${PARALLEL}" "4"
+          fi
+
+      - name: Save ccache
+        uses: actions/cache/save@v4
+        if: github.ref == 'refs/heads/master' || steps.ccache-restore.outputs.cache-hit != 'true'
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ matrix.name }}-${{ github.ref }}-${{ github.sha }}
