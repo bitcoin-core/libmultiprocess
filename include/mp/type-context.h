@@ -73,6 +73,9 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
     auto invoke = [self = kj::mv(self), call_context = kj::mv(server_context.call_context), &server, req, fn, args...](CancelMonitor& cancel_monitor) mutable {
                 MP_LOG(*server.m_context.loop, Log::Debug) << "IPC server executing request #" << req;
                 if (server.m_context.testing_hook_before_sync) server.m_context.testing_hook_before_sync();
+                // Save testing_hook_after_cleanup to a local because the
+                // server may be freed in the cleanup sync() below.
+                auto testing_hook_after_cleanup = std::move(server.m_context.testing_hook_after_cleanup);
                 ServerContext server_context{server, call_context, req};
                 {
                     // Before invoking the function, store a reference to the
@@ -191,6 +194,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                     }
                     // End of scope: if KJ_DEFER was reached, it runs here
                 }
+                if (testing_hook_after_cleanup) testing_hook_after_cleanup();
                 return call_context;
             };
 
