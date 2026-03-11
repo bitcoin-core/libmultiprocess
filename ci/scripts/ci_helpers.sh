@@ -13,6 +13,17 @@ write_env_var() {
   fi
 }
 
+write_output_var() {
+  local key="$1"
+  local value="$2"
+
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    echo "${key}=${value}" >> "${GITHUB_OUTPUT}"
+  else
+    echo "${key}=${value}"
+  fi
+}
+
 available_nproc() {
   if command -v nproc >/dev/null 2>&1; then
     nproc
@@ -50,6 +61,13 @@ install_homebrew_packages() {
 
 install_pip_packages() {
   pip3 install "$@"
+}
+
+determine_host() {
+  local config_guess="${1:-./depends/config.guess}"
+  local output_key="${2:-host}"
+
+  write_output_var "${output_key}" "$("${config_guess}")"
 }
 
 ci_helpers_main() {

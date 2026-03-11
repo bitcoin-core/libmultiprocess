@@ -25,6 +25,56 @@ install_llvm_alternatives() {
   sudo update-alternatives --install /usr/bin/llvm-symbolizer llvm-symbolizer "/usr/bin/llvm-symbolizer-${LLVM_VERSION}" 100
 }
 
+set_llvm_alternatives() {
+  sudo update-alternatives --set clang "/usr/bin/clang-${LLVM_VERSION}"
+  sudo update-alternatives --set clang++ "/usr/bin/clang++-${LLVM_VERSION}"
+  sudo update-alternatives --set llvm-symbolizer "/usr/bin/llvm-symbolizer-${LLVM_VERSION}"
+}
+
+install_tsan_packages() {
+  install_apt_packages \
+    ccache \
+    "clang-${LLVM_VERSION}" \
+    "llvm-${LLVM_VERSION}" \
+    "llvm-${LLVM_VERSION}-dev" \
+    "libclang-${LLVM_VERSION}-dev" \
+    "libclang-rt-${LLVM_VERSION}-dev" \
+    ninja-build \
+    pkgconf \
+    python3-pip \
+    bison
+  install_llvm_alternatives
+  set_llvm_alternatives
+  install_pip_packages --break-system-packages pycapnp
+}
+
+build_instrumented_libcxx() {
+  export PATH="/usr/lib/llvm-${LLVM_VERSION}/bin:${PATH}"
+
+  ls -l /usr/bin/clang /usr/bin/clang++ /usr/bin/llvm-symbolizer
+  which clang clang++ llvm-symbolizer
+  clang --version
+  clang++ --version
+  "/usr/bin/clang-${LLVM_VERSION}" --version
+  "/usr/bin/clang++-${LLVM_VERSION}" --version
+  git clone --depth=1 https://github.com/llvm/llvm-project -b "llvmorg-${LLVM_VERSION}.1.0" /tmp/llvm-project
+  cmake -G Ninja -B "${LIBCXX_DIR}" \
+    -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLLVM_USE_SANITIZER=Thread \
+    -DCMAKE_C_COMPILER="/usr/bin/clang-${LLVM_VERSION}" \
+    -DCMAKE_CXX_COMPILER="/usr/bin/clang++-${LLVM_VERSION}" \
+    -DLLVM_TARGETS_TO_BUILD=Native \
+    -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF \
+    -DLIBCXX_INCLUDE_TESTS=OFF \
+    -DLIBCXXABI_INCLUDE_TESTS=OFF \
+    -DLIBUNWIND_INCLUDE_TESTS=OFF \
+    -DLIBCXXABI_USE_LLVM_UNWINDER=OFF \
+    -S /tmp/llvm-project/runtimes
+  grep -E 'CMAKE_(C|CXX)_COMPILER' "${LIBCXX_DIR}/CMakeCache.txt"
+  ninja -C "${LIBCXX_DIR}" -j "${BUILD_PARALLEL}" -v
+  rm -rf /tmp/llvm-project
+}
 
 configure_bitcoin_core() {
   local cmake_arg
@@ -53,6 +103,29 @@ configure_bitcoin_core() {
 
 build_bitcoin_core() {
   cmake --build build --parallel "${BUILD_PARALLEL}"
+}
+
+build_depends_without_ipc() {
+  make -C depends -j "${BUILD_PARALLEL}" \
+    CC=clang \
+    CXX=clang++ \
+    CXXFLAGS="${LIBCXX_FLAGS}" \
+    NO_QT=1 \
+    NO_ZMQ=1 \
+    NO_USDT=1 \
+    NO_QR=1 \
+    NO_IPC=1
+}
+
+build_depends_with_ipc() {
+  make -C depends -j "${BUILD_PARALLEL}" \
+    CC=clang \
+    CXX=clang++ \
+    CXXFLAGS="${LIBCXX_FLAGS}" \
+    NO_QT=1 \
+    NO_ZMQ=1 \
+    NO_USDT=1 \
+    NO_QR=1
 }
 
 run_ipc_unit_tests() {
