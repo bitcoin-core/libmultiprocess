@@ -398,6 +398,35 @@ KJ_TEST("Calling async IPC method, with server disconnect racing the call")
     }
 }
 
+KJ_TEST("Calling async IPC method, with server disconnect after cleanup")
+{
+    // Regression test for bitcoin/bitcoin#34782 stack-use-after-return where
+    // an async request is canceled after it finishes executing but before the
+    // response is sent.
+    //
+    // Use testing_hook_async_request_done to trigger a disconnect from the
+    // worker thread after it executes an async request but before it returns.
+    // Without the bugfix, the m_on_cancel callback would be called at this
+    // point, accessing the cancel_mutex stack variable that had gone out of
+    // scope.
+    TestSetup setup;
+    ProxyClient<messages::FooInterface>* foo = setup.client.get();
+    foo->initThreadMap();
+    setup.server->m_impl->m_fn = [] {};
+
+    EventLoop& loop = *setup.server->m_context.connection->m_loop;
+    loop.testing_hook_async_request_done = [&] {
+        setup.server_disconnect();
+    };
+
+    try {
+        foo->callFnAsync();
+        KJ_EXPECT(false);
+    } catch (const std::runtime_error& e) {
+        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
+    }
+}
+
 KJ_TEST("Make simultaneous IPC calls on single remote thread")
 {
     TestSetup setup;

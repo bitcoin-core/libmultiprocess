@@ -76,6 +76,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                 MP_LOG(*server.m_context.loop, Log::Debug) << "IPC server executing request #" << req;
                 EventLoop& loop = *server.m_context.loop;
                 if (loop.testing_hook_async_request_start) loop.testing_hook_async_request_start();
+                KJ_DEFER(if (loop.testing_hook_async_request_done) loop.testing_hook_async_request_done());
                 ServerContext server_context{server, call_context, req};
                 {
                     // Before invoking the function, store a reference to the
