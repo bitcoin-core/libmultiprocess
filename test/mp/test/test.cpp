@@ -21,6 +21,7 @@
 #include <kj/memory.h>
 #include <kj/test.h>
 #include <memory>
+#include <mutex>
 #include <mp/proxy.h>
 #include <mp/proxy.capnp.h>
 #include <mp/proxy-io.h>
@@ -323,6 +324,47 @@ KJ_TEST("Calling IPC method, disconnecting and blocking during the call")
     // *before* the TestSetup variable so is not destroyed while
     // signal.get_future().get() is called.
     signal.set_value();
+}
+
+KJ_TEST("Worker thread destroyed before it is initialized")
+{
+    // Regression test for bitcoin/bitcoin#34711, bitcoin/bitcoin#34756
+    // (worker thread destroyed before it acquires the waiter mutex). The
+    // fix acquires the lock before calling set_value so the
+    // ProxyServer<Thread> destructor cannot null the waiter while the
+    // worker is between set_value and Lock.
+    //
+    // The testing_hook_makethread fires right after set_value in
+    // makeThread's worker thread. A checker thread uses try_lock to
+    // verify the waiter mutex is held at that point. With the fix
+    // (Lock before set_value) the mutex is held, so try_lock fails.
+    // Without the fix (set_value before Lock) the hook fires before
+    // Lock, so try_lock succeeds, indicating the race window exists.
+    TestSetup setup;
+    ProxyClient<messages::FooInterface>* foo = setup.client.get();
+    foo->initThreadMap();
+    setup.server->m_impl->m_fn = [] {};
+
+    std::promise<std::mutex*> mutex_promise;
+    std::promise<void> check_done;
+    Connection* conn = setup.server->m_context.connection;
+    conn->testing_hook_makethread = [&] {
+        mutex_promise.set_value(&g_thread_context.waiter->m_mutex.m_mutex);
+        check_done.get_future().wait();
+    };
+
+    std::atomic<bool> lock_was_held{false};
+    std::thread check_thread{[&] {
+        std::mutex* m = mutex_promise.get_future().get();
+        bool locked = m->try_lock();
+        if (locked) m->unlock();
+        lock_was_held = !locked;
+        check_done.set_value();
+    }};
+
+    foo->callFnAsync();
+    check_thread.join();
+    KJ_EXPECT(lock_was_held);
 }
 
 KJ_TEST("Calling async IPC method, with server disconnect racing the call")

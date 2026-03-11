@@ -461,6 +461,11 @@ public:
     //! ThreadMap.makeThread) used to service requests to clients.
     ::capnp::CapabilityServerSet<Thread> m_threads;
 
+    //! Hook called on the worker thread inside makeThread, right after
+    //! set_value. Used by tests to verify the waiter mutex is held when
+    //! the thread context is published.
+    std::function<void()> testing_hook_makethread;
+
     //! Canceler for canceling promises that we want to discard when the
     //! connection is destroyed. This is used to interrupt method calls that are
     //! still executing at time of disconnection.
