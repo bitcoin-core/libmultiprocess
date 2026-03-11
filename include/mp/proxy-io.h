@@ -340,6 +340,14 @@ public:
 
     //! External context pointer.
     void* m_context;
+
+    //! Hook called when ProxyServer<ThreadMap>::makeThread() is called.
+    std::function<void()> testing_hook_makethread;
+
+    //! Hook called on the worker thread inside makeThread(), after the thread
+    //! context is set up and thread_context promise is fulfilled, but before it
+    //! starts waiting for requests.
+    std::function<void()> testing_hook_makethread_created;
 };
 
 //! Single element task queue used to handle recursive capnp calls. (If the

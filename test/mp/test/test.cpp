@@ -9,6 +9,7 @@
 #include <capnp/capability.h>
 #include <capnp/rpc.h>
 #include <cassert>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
@@ -63,6 +64,7 @@ class TestSetup
 {
 public:
     std::function<void()> server_disconnect;
+    std::function<void()> server_disconnect_later;
     std::function<void()> client_disconnect;
     std::promise<std::unique_ptr<ProxyClient<messages::FooInterface>>> client_promise;
     std::unique_ptr<ProxyClient<messages::FooInterface>> client;
@@ -88,6 +90,10 @@ public:
                       return capnp::Capability::Client(kj::mv(server_proxy));
                   });
               server_disconnect = [&] { loop.sync([&] { server_connection.reset(); }); };
+              server_disconnect_later = [&] {
+                  assert(std::this_thread::get_id() == loop.m_thread_id);
+                  loop.m_task_set->add(kj::evalLater([&] { server_connection.reset(); }));
+              };
               // Set handler to destroy the server when the client disconnects. This
               // is ignored if server_disconnect() is called instead.
               server_connection->onDisconnect([&] { server_connection.reset(); });
@@ -323,6 +329,40 @@ KJ_TEST("Calling IPC method, disconnecting and blocking during the call")
     // *before* the TestSetup variable so is not destroyed while
     // signal.get_future().get() is called.
     signal.set_value();
+}
+
+KJ_TEST("Worker thread destroyed before it is initialized")
+{
+    // Regression test for bitcoin/bitcoin#34711, bitcoin/bitcoin#34756
+    // where worker thread is destroyed before it starts.
+    //
+    // The test works by using the `makethread` hook to start a disconnect as
+    // soon as ProxyServer<ThreadMap>::makeThread is called, and using the
+    // `makethread_created` hook to sleep 100ms after the thread is created but
+    // before it starts waiting, so without the bugfix,
+    // ProxyServer<Thread>::~ProxyServer would run and destroy the waiter,
+    // causing a SIGSEGV in the worker thread after the sleep.
+    TestSetup setup;
+    ProxyClient<messages::FooInterface>* foo = setup.client.get();
+    foo->initThreadMap();
+    setup.server->m_impl->m_fn = [] {};
+
+    EventLoop& loop = *setup.server->m_context.connection->m_loop;
+    loop.testing_hook_makethread = [&] {
+        setup.server_disconnect_later();
+    };
+    loop.testing_hook_makethread_created = [&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    };
+
+    bool disconnected{false};
+    try {
+        foo->callFnAsync();
+    } catch (const std::runtime_error& e) {
+        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
+        disconnected = true;
+    }
+    KJ_EXPECT(disconnected);
 }
 
 KJ_TEST("Make simultaneous IPC calls on single remote thread")
