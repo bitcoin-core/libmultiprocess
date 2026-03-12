@@ -130,6 +130,10 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
+      NIXPKGS_CHANNEL: nixos-25.05
+      NIX_EXTRA_CONFIG: |
+        keep-env-derivations = true
+        keep-outputs = true
       NIX_EXTRA_CONFIG_ACT: |
         sandbox = false
         filter-syscalls = false
@@ -144,16 +148,62 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Resolve nixpkgs channel revision
+        id: nixpkgs
+        run: |
+          rev="$(curl --fail --location --silent --show-error "https://channels.nixos.org/${NIXPKGS_CHANNEL}/git-revision")"
+          test -n "$rev"
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+
       - name: Install Nix
         uses: cachix/install-nix-action@v31       # 2025-05-27, from https://github.com/cachix/install-nix-action/tags
         with:
-          nix_path: nixpkgs=channel:nixos-25.05   # latest release
+          nix_path: nixpkgs=https://github.com/NixOS/nixpkgs/archive/${{ steps.nixpkgs.outputs.rev }}.tar.gz
           # Act executes inside an unprivileged container (Docker or Podman),
           # so KVM support isn't available.
           enable_kvm: "${{ github.actor != 'nektos/act' }}"
-          extra_nix_config: ${{ github.actor == 'nektos/act' && env.NIX_EXTRA_CONFIG_ACT || '' }}
+          extra_nix_config: |
+            ${{ env.NIX_EXTRA_CONFIG }}
+            ${{ github.actor == 'nektos/act' && env.NIX_EXTRA_CONFIG_ACT || '' }}
+
+      # Cache the heaviest Nix job to stay within GitHub's cache budget while
+      # still avoiding repeated gnu32 cross-toolchain downloads and builds.
+      # Resolve the current channel revision once so the exact toolchain inputs
+      # are represented in both the environment and the cache key.
+      - name: Restore Nix store
+        id: gnu32-nix-cache
+        if: matrix.config == 'gnu32'
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ matrix.config }}-${{ steps.nixpkgs.outputs.rev }}-${{ hashFiles('shell.nix', 'ci/patches/*.patch', 'ci/configs/gnu32.bash') }}
+          restore-prefixes-first-match: |
+            nix-${{ runner.os }}-${{ matrix.config }}-${{ steps.nixpkgs.outputs.rev }}-
+            nix-${{ runner.os }}-${{ matrix.config }}-
+            nix-${{ runner.os }}-
+          save: false
 
       - name: Run CI script
         env:
           CI_CONFIG: ci/configs/${{ matrix.config }}.bash
         run: ci/scripts/run.sh
+
+      # Use an explicit save step instead of the action post-step so we only
+      # archive the store after the build succeeded and the shell closure is
+      # rooted against the save-time garbage collection pass.
+      - name: Root gnu32 shell closure for cache save
+        if: matrix.config == 'gnu32' && success() && steps.gnu32-nix-cache.outputs.hit-primary-key != 'true'
+        run: |
+          mkdir -p .nix-gc-roots
+          nix-build shell.nix \
+            -o .nix-gc-roots/gnu32-shell \
+            --arg minimal true \
+            --arg crossPkgs 'import <nixpkgs> { crossSystem = { config = "i686-unknown-linux-gnu"; }; }'
+          nix-store --query --requisites .nix-gc-roots/gnu32-shell >/dev/null
+
+      - name: Queue Nix store save
+        if: matrix.config == 'gnu32' && success() && steps.gnu32-nix-cache.outputs.hit-primary-key != 'true'
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ matrix.config }}-${{ steps.nixpkgs.outputs.rev }}-${{ hashFiles('shell.nix', 'ci/patches/*.patch', 'ci/configs/gnu32.bash') }}
+          lookup-only: true
+          gc-max-store-size-linux: 10G
