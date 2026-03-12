@@ -102,7 +102,7 @@ std::string LogEscape(const kj::StringTree& string, size_t max_size)
                 result.append("\\\\");
             } else if (c < 0x20 || c > 0x7e) {
                 char escape[4];
-                snprintf(escape, 4, "\\%02x", c);
+                snprintf(escape, sizeof(escape), "\\%02x", static_cast<unsigned char>(c));
                 result.append(escape);
             } else {
                 result.push_back(c);
