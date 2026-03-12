@@ -32,9 +32,9 @@ jobs:
       matrix:
         include:
           - name: 'ASan + UBSan'
-            unit_test_runs: 1
-            functional_test_runs: 1
-            nproc_multiplier: 1
+            unit_test_runs: 15
+            functional_test_runs: 300
+            nproc_multiplier: 10
             functional_timeout_factor: 4
             runner: ubuntu-24.04
             apt-llvm: true
@@ -60,9 +60,9 @@ jobs:
               -DCMAKE_CXX_FLAGS=-ftrivial-auto-var-init=pattern
 
           - name: 'macOS'
-            unit_test_runs: 1
-            functional_test_runs: 1
-            nproc_multiplier: 1
+            unit_test_runs: 50
+            functional_test_runs: 200
+            nproc_multiplier: 5
             functional_timeout_factor: 4
             runner: macos-15
             brew-packages: ccache capnp boost libevent sqlite pkgconf ninja
