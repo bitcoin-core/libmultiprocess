@@ -645,7 +645,7 @@ template <typename Client>
 void clientDestroy(Client& client)
 {
     if (client.m_context.connection) {
-        MP_LOG(*client.m_context.loop, Log::Info) << "IPC client destroy " << typeid(client).name();
+        MP_LOG(*client.m_context.loop, Log::Debug) << "IPC client destroy " << typeid(client).name();
     } else {
         KJ_LOG(INFO, "IPC interrupted client destroy", typeid(client).name());
     }
@@ -654,7 +654,7 @@ void clientDestroy(Client& client)
 template <typename Server>
 void serverDestroy(Server& server)
 {
-    MP_LOG(*server.m_context.loop, Log::Info) << "IPC server destroy " << typeid(server).name();
+    MP_LOG(*server.m_context.loop, Log::Debug) << "IPC server destroy " << typeid(server).name();
 }
 
 //! Entry point called by generated client code that looks like:
