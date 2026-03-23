@@ -814,6 +814,7 @@ void _Serve(EventLoop& loop, kj::Own<kj::AsyncIoStream>&& stream, InitImpl& init
         return kj::heap<ProxyServer<InitInterface>>(std::shared_ptr<InitImpl>(&init, [](InitImpl*){}), connection);
     });
     auto it = loop.m_incoming_connections.begin();
+    MP_LOG(loop, Log::Info) << "IPC server: socket connected.";
     it->onDisconnect([&loop, it] {
         MP_LOG(loop, Log::Info) << "IPC server: socket disconnected.";
         loop.m_incoming_connections.erase(it);
