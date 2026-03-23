@@ -120,10 +120,11 @@ jobs:
         env:
           HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
         run: |
-          brew install --quiet ninja capnp
+          brew install --quiet ninja capnp llvm
 
       - name: Run CI script
         run: |
+          export PATH="$(brew --prefix llvm)/bin:$PATH"
           CI_CONFIG="ci/configs/macos.bash" bash ci/scripts/ci.sh
 
   build:
