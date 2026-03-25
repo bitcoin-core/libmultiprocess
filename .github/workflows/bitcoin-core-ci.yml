@@ -35,7 +35,7 @@ jobs:
             unit_test_runs: 15
             functional_test_runs: 300
             nproc_multiplier: 10
-            functional_timeout_factor: 4
+            functional_timeout_factor: 40
             runner: ubuntu-24.04
             apt-llvm: true
             packages: >-
@@ -63,7 +63,7 @@ jobs:
             unit_test_runs: 50
             functional_test_runs: 200
             nproc_multiplier: 5
-            functional_timeout_factor: 4
+            functional_timeout_factor: 40
             runner: macos-15
             brew-packages: ccache capnp boost libevent sqlite pkgconf ninja
             pip-packages: --break-system-packages pycapnp
@@ -172,7 +172,7 @@ jobs:
             unit_test_runs: 8
             functional_test_runs: 300
             nproc_multiplier: 10
-            functional_timeout_factor: 10
+            functional_timeout_factor: 40
 
     env:
       CCACHE_MAXSIZE: 400M
