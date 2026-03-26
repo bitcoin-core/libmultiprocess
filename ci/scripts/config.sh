@@ -6,6 +6,8 @@
 #
 # Source CI configuration and output variables needed by the workflow.
 
+export LC_ALL=C
+
 set -o errexit -o nounset -o pipefail -o xtrace
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
