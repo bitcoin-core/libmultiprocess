@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+export LC_ALL=C
+
 set -o errexit -o nounset -o pipefail -o xtrace
 
 write_env_var() {
