@@ -5,13 +5,16 @@
 #include <init.capnp.h>
 #include <init.capnp.proxy.h>
 
+#include <array>
 #include <cstring> // IWYU pragma: keep
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <iostream>
 #include <kj/async.h>
+#include <kj/async-io.h>
 #include <kj/common.h>
+#include <kj/memory.h>
 #include <memory>
 #include <mp/proxy-io.h>
 #include <mp/util.h>
@@ -19,20 +22,21 @@
 #include <string>
 #include <thread>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
 
 static auto Spawn(mp::EventLoop& loop, const std::string& process_argv0, const std::string& new_exe_name)
 {
-    int pid;
-    const int fd = mp::SpawnProcess(pid, [&](int fd) -> std::vector<std::string> {
+    auto pair{mp::SocketPair()};
+    mp::ProcessId pid{mp::SpawnProcess(pair[0], [&](mp::ConnectInfo info) -> std::vector<std::string> {
         fs::path path = process_argv0;
         path.remove_filename();
         path.append(new_exe_name);
-        return {path.string(), std::to_string(fd)};
-    });
-    return std::make_tuple(mp::ConnectStream<InitInterface>(loop, fd), pid);
+        return {path.string(), std::move(info)};
+    })};
+    return std::make_tuple(mp::ConnectStream<InitInterface>(loop, loop.m_io_context.lowLevelProvider->wrapSocketFd(pair[1])), pid);
 }
 
 static void LogPrint(mp::LogMessage log_data)

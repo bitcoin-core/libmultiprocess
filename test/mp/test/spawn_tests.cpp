@@ -6,6 +6,7 @@
 
 #include <kj/test.h>
 
+#include <array>
 #include <chrono>
 #include <compare>
 #include <condition_variable>
@@ -86,14 +87,15 @@ KJ_TEST("SpawnProcess does not run callback in child")
         control_cv.notify_one();
     });
 
-    int pid{-1};
-    const int fd{mp::SpawnProcess(pid, [&](int child_fd) -> std::vector<std::string> {
+    auto [parent_fd, child_fd] = mp::SocketPair();
+    const mp::ProcessId pid{mp::SpawnProcess(child_fd, [&](const mp::ConnectInfo& connect_info) -> std::vector<std::string> {
         // If this callback runs in the post-fork child, target_mutex appears
         // locked forever (the owning thread does not exist), so this deadlocks.
         std::lock_guard<std::mutex> g(target_mutex);
-        return {"true", std::to_string(child_fd)};
+        return {"true", connect_info};
     })};
-    ::close(fd);
+    ::close(child_fd);
+    ::close(parent_fd);
 
     int status{0};
     // Give the child some time to exit. If it does not, terminate it and
