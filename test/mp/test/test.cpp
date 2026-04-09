@@ -9,10 +9,8 @@
 #include <capnp/capability.h>
 #include <capnp/rpc.h>
 #include <cassert>
-#include <chrono>
 #include <condition_variable>
 #include <cstdint>
-#include <cstring>
 #include <functional>
 #include <future>
 #include <kj/async.h>
