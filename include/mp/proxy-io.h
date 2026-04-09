@@ -356,6 +356,9 @@ public:
 
     //! Hook called on the worker thread just before returning results.
     std::function<void()> testing_hook_async_request_done;
+
+    //! Hook called on the server thread when the client has connected.
+    std::function<void()> testing_hook_connected;
 };
 
 //! Single element task queue used to handle recursive capnp calls. (If the
@@ -842,6 +845,7 @@ void _Serve(EventLoop& loop, kj::Own<kj::AsyncIoStream>&& stream, InitImpl& init
     });
     auto it = loop.m_incoming_connections.begin();
     MP_LOG(loop, Log::Info) << "IPC server: socket connected.";
+    if (loop.testing_hook_connected) loop.testing_hook_connected();
     it->onDisconnect([&loop, it] {
         MP_LOG(loop, Log::Info) << "IPC server: socket disconnected.";
         loop.m_incoming_connections.erase(it);
