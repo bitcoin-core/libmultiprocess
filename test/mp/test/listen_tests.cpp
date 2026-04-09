@@ -5,16 +5,20 @@
 #include <mp/test/foo.capnp.h>
 #include <mp/test/foo.capnp.proxy.h>
 
-#include <capnp/rpc.h>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <future>
+#include <kj/async.h>
+#include <kj/common.h>
+#include <kj/debug.h>
+#include <kj/memory.h>
 #include <kj/test.h>
 #include <memory>
 #include <mp/proxy-io.h>
 #include <mutex>
+#include <optional>
 #include <ratio> // IWYU pragma: keep
 #include <stdexcept>
 #include <string>
@@ -22,8 +26,6 @@
 #include <sys/un.h>
 #include <thread>
 #include <unistd.h>
-
-#include "foo.h"
 
 namespace mp {
 namespace test {
