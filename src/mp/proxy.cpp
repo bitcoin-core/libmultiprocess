@@ -22,6 +22,7 @@
 #include <kj/async-prelude.h>
 #include <kj/common.h>
 #include <kj/debug.h>
+#include <kj/exception.h>
 #include <kj/function.h>
 #include <kj/memory.h>
 #include <kj/string.h>
@@ -245,7 +246,12 @@ void EventLoop::loop()
         if (read_bytes != 1) throw std::logic_error("EventLoop wait_stream closed unexpectedly");
         Lock lock(m_mutex);
         if (m_post_fn) {
-            Unlock(lock, *m_post_fn);
+            // m_post_fn throwing is never expected. If it does happen, the caller
+            // of EventLoop::post() will return without any indication of failure,
+            // which will likely cause other bugs. Log the error and continue.
+            KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&]() { Unlock(lock, *m_post_fn); })) {
+                MP_LOG(*this, Log::Error) << "EventLoop: m_post_fn threw: " << kj::str(*exception).cStr();
+            }
             m_post_fn = nullptr;
             m_cv.notify_all();
         } else if (done()) {
