@@ -9,6 +9,9 @@ include.
 
 ## v12
 - Current unstable version.
+- Adds an optional per-listener `max_connections` parameter to `ListenConnections()`
+  so servers can stop accepting new connections when a local connection cap is reached,
+  and resume accepting after existing connections disconnect.
 
 ## [v11.0](https://github.com/bitcoin-core/libmultiprocess/commits/v11.0)
 - Adds `makePool` method on `ThreadMap` to support thread pool routing, allowing requests without a specific client thread to be dispatched to a pool using a shortest-queue strategy ([#283](https://github.com/bitcoin-core/libmultiprocess/pull/283)).
