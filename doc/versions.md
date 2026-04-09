@@ -9,6 +9,9 @@ include.
 
 ## v12
 - Current unstable version.
+- Adds an optional per-listener `max_connections` parameter to `ListenConnections()`
+  so servers can stop accepting new connections when a local connection cap is reached,
+  and resume accepting after existing connections disconnect.
 
 ## [v11.0](https://github.com/bitcoin-core/libmultiprocess/commits/v11.0)
 - Tolerates unexpected exceptions in event loop `post()` callbacks.
