@@ -245,6 +245,19 @@ KJ_TEST("Call IPC method after client connection is closed")
     KJ_EXPECT(disconnected);
 }
 
+KJ_TEST("TimingResistantEqual compares secret-like values without prefix leaks")
+{
+    KJ_EXPECT(TimingResistantEqual("", ""));
+    KJ_EXPECT(TimingResistantEqual("abc123", "abc123"));
+    KJ_EXPECT(!TimingResistantEqual("abc123", "abc124"));
+    KJ_EXPECT(!TimingResistantEqual("abc123", "abc1234"));
+    KJ_EXPECT(!TimingResistantEqual("abc1234", "abc123"));
+
+    // Different prefix lengths should still be handled correctly.
+    KJ_EXPECT(!TimingResistantEqual("x", "zzzzzzzz"));
+    KJ_EXPECT(!TimingResistantEqual("zzzzzzzz", "x"));
+}
+
 KJ_TEST("Calling IPC method after server connection is closed")
 {
     TestSetup setup;
