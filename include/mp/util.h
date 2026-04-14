@@ -14,6 +14,7 @@
 #include <kj/string-tree.h>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -208,6 +209,22 @@ void Unlock(Lock& lock, Callback&& callback)
 {
     const UnlockGuard<Lock> unlock(lock);
     callback();
+}
+
+//! Compare two byte sequences in constant time.
+//!
+//! This avoids early exits and data-dependent branches so callers can compare
+//! information via timing side channels
+inline bool TimingResistantEqual(std::string_view a, std::string_view b)
+{
+    const size_t max_size = a.size() > b.size() ? a.size() : b.size();
+    unsigned char diff = static_cast<unsigned char>(a.size() ^ b.size());
+    for (size_t i = 0; i < max_size; ++i) {
+        const unsigned char ac = i < a.size() ? static_cast<unsigned char>(a[i]) : 0;
+        const unsigned char bc = i < b.size() ? static_cast<unsigned char>(b[i]) : 0;
+        diff |= static_cast<unsigned char>(ac ^ bc);
+    }
+    return diff == 0;
 }
 
 //! Invoke a function and run a follow-up action before returning the original
