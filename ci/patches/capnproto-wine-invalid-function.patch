@@ -1,0 +1,36 @@
+From: libmultiprocess CI <ci@invalid>
+Subject: [PATCH] kj: Treat ERROR_INVALID_FUNCTION from
+ GetFileInformationByHandleEx as non-fatal
+
+Wine's NtQueryInformationFile returns STATUS_NOT_IMPLEMENTED for any
+FILE_INFORMATION_CLASS it does not handle (see the default case in
+dlls/ntdll/unix/file.c:NtQueryInformationFile in the wine source).
+RtlNtStatusToDosError maps STATUS_NOT_IMPLEMENTED (0xC0000002) to
+ERROR_INVALID_FUNCTION (1), so GetFileInformationByHandleEx returns 1
+when called with FileCompressionInfo (and other classes Wine doesn't
+implement) instead of the ERROR_CALL_NOT_IMPLEMENTED (120) that the
+existing fallback expects. Without this, cap'n proto's KJ filesystem
+layer throws an uncaught exception when running cross-compiled capnp.exe
+under Wine. Treat ERROR_INVALID_FUNCTION the same way: skip the sparse
+file space-usage query and continue.
+
+Forwarded: https://github.com/capnproto/capnproto/pull/2633
+Drop once that PR is merged and a release containing it is pinned.
+---
+ c++/src/kj/filesystem-disk-win32.c++ | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+--- a/c++/src/kj/filesystem-disk-win32.c++
++++ b/c++/src/kj/filesystem-disk-win32.c++
+@@ -380,6 +380,11 @@
+       case ERROR_CALL_NOT_IMPLEMENTED:
+         // Probably WINE.
+       	break;
++      case ERROR_INVALID_FUNCTION:
++        // Also WINE: NtQueryInformationFile returns STATUS_NOT_IMPLEMENTED for
++        // unsupported FileInfoClass values, which RtlNtStatusToDosError maps to
++        // ERROR_INVALID_FUNCTION (not ERROR_CALL_NOT_IMPLEMENTED).
++        break;
+       case ERROR_INVALID_PARAMETER:
+         // Probably VeraCrypt. See https://github.com/capnproto/capnproto/issues/2176
+         break;
