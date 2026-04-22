@@ -54,12 +54,12 @@ void CustomBuildField(TypeList<Impl&>,
     InvokeContext& invoke_context,
     Impl& value,
     Output&& output,
-    typename decltype(output.get())::Calls* enable = nullptr)
+    typename Decay<decltype(output.get())>::Calls* enable = nullptr)
 {
     // Disable deleter so proxy server object doesn't attempt to delete the
     // wrapped implementation when the proxy client is destroyed or
     // disconnected.
-    using Interface = typename decltype(output.get())::Calls;
+    using Interface = typename Decay<decltype(output.get())>::Calls;
     output.set(CustomMakeProxyServer<Interface, Impl>(invoke_context, std::shared_ptr<Impl>(&value, [](Impl*){})));
 }
 
