@@ -427,6 +427,32 @@ KJ_TEST("Calling async IPC method, with server disconnect after cleanup")
     }
 }
 
+KJ_TEST("Destroying ProxyClient<> with destroy method after peer disconnect")
+{
+    // Regression test for bitcoin-core/libmultiprocess#219 where
+    // ~ProxyClientBase would call std::terminate if the remote destroy RPC
+    // failed during teardown.
+    //
+    // Save a callback on the server so it holds a ProxyClient<FooCallback>
+    // pointing back to this side, then disconnect. When the server is torn
+    // down, the ProxyClient<FooCallback> destructor issues a destroy RPC over
+    // the now dead connection; without the bugfix the exception escapes the
+    // noexcept destructor and aborts the process.
+
+    TestSetup setup{/*client_owns_connection=*/false};
+    ProxyClient<messages::FooInterface>* foo = setup.client.get();
+    foo->initThreadMap();
+
+    class Callback : public FooCallback
+    {
+    public:
+        int call(int arg) override { return arg; }
+    };
+
+    foo->saveCallback(std::make_shared<Callback>());
+    setup.client_disconnect();
+}
+
 KJ_TEST("Make simultaneous IPC calls on single remote thread")
 {
     TestSetup setup;

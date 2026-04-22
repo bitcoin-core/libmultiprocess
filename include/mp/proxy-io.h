@@ -538,7 +538,12 @@ ProxyClientBase<Interface, Impl>::ProxyClientBase(typename Interface::Client cli
         // the remote object, waiting for it to be deleted server side. If the
         // capnp interface does not define a destroy method, this will just call
         // an empty stub defined in the ProxyClientBase class and do nothing.
-        Sub::destroy(*this);
+        // Exceptions are caught and logged rather than propagated because
+        // ~ProxyClientBase is noexcept and the peer may be gone by the time
+        // this runs.
+        if (kj::runCatchingExceptions([&]{ Sub::destroy(*this); }) != nullptr) {
+            MP_LOG(*m_context.loop, Log::Warning) << "Remote destroy call failed during cleanup. Continuing.";
+        }
 
         // FIXME: Could just invoke removed addCleanup fn here instead of duplicating code
         m_context.loop->sync([&]() {
