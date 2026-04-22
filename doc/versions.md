@@ -7,8 +7,12 @@ Library versions are tracked with simple
 Versioning policy is described in the [version.h](../include/mp/version.h)
 include.
 
-## v11
+## v12
 - Current unstable version.
+- Adds support for nonunix platforms, making API changes that are not backwards compatible.
+
+## [v11.0](https://github.com/bitcoin-core/libmultiprocess/commits/v11.0)
+- Improves debug output if EventLoop::post callback fails.
 
 ## [v10.0](https://github.com/bitcoin-core/libmultiprocess/commits/v10.0)
 - Increases spawn test timeout to avoid spurious failures.
