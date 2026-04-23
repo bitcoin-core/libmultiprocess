@@ -25,6 +25,19 @@
 
 #ifdef WIN32
 #include <winsock2.h>
+// <winsock2.h> transitively includes <windows.h>, which pulls in
+// <commdlg.h> and other COM headers that #define INTERFACE, interface
+// and ERROR. These collide with capnp's Kind::INTERFACE enumerator,
+// identifiers named `interface`, and KJ_LOG(ERROR, ...).
+#ifdef INTERFACE
+#undef INTERFACE
+#endif
+#ifdef interface
+#undef interface
+#endif
+#ifdef ERROR
+#undef ERROR
+#endif
 #endif
 
 namespace mp {

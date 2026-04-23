@@ -77,13 +77,13 @@ static bool GetAnnotationInt32(const Reader& reader, uint64_t id, int32_t* resul
     return false;
 }
 
-static void ForEachMethod(const capnp::InterfaceSchema& interface, const std::function<void(const capnp::InterfaceSchema& interface, const capnp::InterfaceSchema::Method)>& callback) // NOLINT(misc-no-recursion)
+static void ForEachMethod(const capnp::InterfaceSchema& schema, const std::function<void(const capnp::InterfaceSchema& schema, const capnp::InterfaceSchema::Method)>& callback) // NOLINT(misc-no-recursion)
 {
-    for (const auto super : interface.getSuperclasses()) {
+    for (const auto super : schema.getSuperclasses()) {
         ForEachMethod(super, callback);
     }
-    for (const auto method : interface.getMethods()) {
-        callback(interface, method);
+    for (const auto method : schema.getMethods()) {
+        callback(schema, method);
     }
 }
 
@@ -389,7 +389,7 @@ static void Generate(kj::StringPtr src_prefix,
         }
 
         if (proxied_class_type.size() && node.getProto().isInterface()) {
-            const auto& interface = node.asInterface();
+            const auto& node_interface = node.asInterface();
 
             std::ostringstream client;
             client << "template<>\nstruct ProxyClient<" << message_namespace << "::" << node_name << "> final : ";
@@ -411,7 +411,7 @@ static void Generate(kj::StringPtr src_prefix,
             const std::ostringstream client_destroy;
 
             int method_ordinal = 0;
-            ForEachMethod(interface, [&] (const capnp::InterfaceSchema& method_interface, const capnp::InterfaceSchema::Method& method) {
+            ForEachMethod(node_interface, [&] (const capnp::InterfaceSchema& method_interface, const capnp::InterfaceSchema::Method& method) {
                 const kj::StringPtr method_name = method.getProto().getName();
                 kj::StringPtr proxied_method_name = method_name;
                 GetAnnotationText(method.getProto(), NAME_ANNOTATION_ID, &proxied_method_name);
@@ -501,7 +501,7 @@ static void Generate(kj::StringPtr src_prefix,
                     }
                 }
 
-                if (!is_construct && !is_destroy && (&method_interface == &interface)) {
+                if (!is_construct && !is_destroy && (&method_interface == &node_interface)) {
                     methods << "template<>\n";
                     methods << "struct ProxyMethod<" << method_prefix << "Params>\n";
                     methods << "{\n";
