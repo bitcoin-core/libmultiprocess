@@ -127,6 +127,25 @@ jobs:
           export PATH="$(brew --prefix llvm)/bin:$PATH"
           CI_CONFIG="ci/configs/macos.bash" bash ci/scripts/ci.sh
 
+  test-windows-cross:
+    runs-on: windows-latest
+    name: test • windows cross
+    needs: build
+    # GitHub-hosted max, nix build is very slow without cache
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-cross-ucrt-build
+          path: windows-cross-artifact
+
+      - name: Run Windows tests
+        shell: pwsh
+        run: ci/scripts/windows_native_test.ps1 -ArtifactRoot windows-cross-artifact
   build:
     runs-on: ubuntu-latest
 
@@ -142,7 +161,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        config: [default, llvm, gnu32, sanitize, olddeps]
+        config: [default, llvm, gnu32, sanitize, olddeps, windows]
 
     name: build • ${{ matrix.config }}
 
@@ -181,3 +200,18 @@ jobs:
         env:
           CI_CONFIG: ci/configs/${{ matrix.config }}.bash
         run: ci/scripts/run.sh
+
+      - name: Package Windows artifacts
+        if: matrix.config == 'windows'
+        env:
+          CI_CONFIG: ci/configs/${{ matrix.config }}.bash
+        run: |
+          source "$CI_CONFIG"
+          nix develop --ignore-environment --keep CI_CONFIG "${NIX_ARGS[@]+"${NIX_ARGS[@]}"}" -f shell.nix --command bash ci/scripts/windows_package.sh
+
+      - name: Upload Windows artifacts
+        if: matrix.config == 'windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-cross-ucrt-build
+          path: windows-cross-artifact
