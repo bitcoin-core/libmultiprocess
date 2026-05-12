@@ -29,7 +29,7 @@ if(BUILD_TESTING AND TARGET CapnProto::kj-test)
     mp/test/spawn_tests.cpp
     mp/test/test.cpp
   )
-  include(${PROJECT_SOURCE_DIR}/cmake/TargetCapnpSources.cmake)
+
   target_capnp_sources(mptest ${CMAKE_CURRENT_SOURCE_DIR} mp/test/foo.capnp)
   target_include_directories(mptest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(mptest PRIVATE CapnProto::kj-test)
