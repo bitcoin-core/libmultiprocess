@@ -10,8 +10,10 @@ source "${SCRIPT_DIR}/ci_helpers.sh"
 
 replace_subtree() {
   rm -rf src/ipc/libmultiprocess
-  cp -a _libmultiprocess src/ipc/libmultiprocess
-  rm -rf src/ipc/libmultiprocess/.git
+  # The Bitcoin Core subtree mirrors the contents of the upstream 'lib'
+  # branch, which is 'git subtree split --prefix=lib' of master. Replace the
+  # subtree with the same lib/ contents the split branch would publish.
+  cp -a _libmultiprocess/lib src/ipc/libmultiprocess
 }
 
 add_llvm_apt_repository() {
