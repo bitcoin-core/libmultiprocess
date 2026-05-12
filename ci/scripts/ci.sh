@@ -21,6 +21,12 @@ cmake --version
 cmake_ver=$(cmake --version | awk '/version/{print $3; exit}')
 ver_ge() { [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
 
+# The library sources live under lib/ so that 'git subtree split --prefix=lib'
+# produces a 'lib' branch suitable for consumption as a git subtree by
+# downstream projects, without pulling in CI scripts, examples, pkg-config
+# templates, documentation or other upstream-only files. Standalone builds use
+# the top-level CMakeLists.txt wrapper, which adds the example/ subdirectory
+# and pkg-config install rules on top of lib/.
 src_dir=$PWD
 mkdir -p "$CI_DIR"
 cd "$CI_DIR"

@@ -10,8 +10,17 @@ source "${SCRIPT_DIR}/ci_helpers.sh"
 
 replace_subtree() {
   rm -rf src/ipc/libmultiprocess
-  cp -a _libmultiprocess src/ipc/libmultiprocess
-  rm -rf src/ipc/libmultiprocess/.git
+  # The Bitcoin Core subtree mirrors the contents of the upstream 'lib'
+  # branch, which is 'git subtree split --prefix=lib' of master. Replace the
+  # subtree with the same lib/ contents the split branch would publish.
+  cp -a _libmultiprocess/lib src/ipc/libmultiprocess
+  # The example/ directory is intentionally not part of the 'lib' branch, so
+  # the mpcalculator/mpprinter/mpexample targets do not exist. Drop the line
+  # in Bitcoin Core's cmake glue that references them. Remove this once
+  # Bitcoin Core no longer references the example targets. Use perl -ni
+  # rather than 'sed -i' so this works on both GNU and BSD sed (macOS).
+  perl -ni -e 'print unless /set_target_properties\(mpcalculator mpprinter mpexample/' \
+    cmake/libmultiprocess.cmake
 }
 
 add_llvm_apt_repository() {
