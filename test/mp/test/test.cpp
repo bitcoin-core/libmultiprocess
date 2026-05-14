@@ -34,6 +34,7 @@
 #include <string_view>
 #include <thread>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -143,6 +144,8 @@ KJ_TEST("Call FooInterface methods")
     in.name = "name";
     in.setint.insert(2);
     in.setint.insert(1);
+    in.unorderedsetint.insert(2);
+    in.unorderedsetint.insert(1);
     in.vbool.push_back(false);
     in.vbool.push_back(true);
     in.vbool.push_back(false);
@@ -151,6 +154,10 @@ KJ_TEST("Call FooInterface methods")
     KJ_EXPECT(in.setint.size() == out.setint.size());
     for (auto init{in.setint.begin()}, outit{out.setint.begin()}; init != in.setint.end() && outit != out.setint.end(); ++init, ++outit) {
         KJ_EXPECT(*init == *outit);
+    }
+    KJ_EXPECT(in.unorderedsetint.size() == out.unorderedsetint.size());
+    for (const auto& elem : in.unorderedsetint) {
+        KJ_EXPECT(out.unorderedsetint.count(elem) == 1);
     }
     KJ_EXPECT(in.vbool.size() == out.vbool.size());
     for (size_t i = 0; i < in.vbool.size(); ++i) {

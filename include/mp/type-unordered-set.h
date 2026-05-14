@@ -2,15 +2,16 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef MP_PROXY_TYPE_SET_H
-#define MP_PROXY_TYPE_SET_H
+#ifndef MP_PROXY_TYPE_UNORDERED_SET_H
+#define MP_PROXY_TYPE_UNORDERED_SET_H
 
 #include <mp/proxy-types.h>
 #include <mp/util.h>
+#include <unordered_set>
 
 namespace mp {
 template <typename LocalType, typename Value, typename Output>
-void CustomBuildField(TypeList<std::set<LocalType>>,
+void CustomBuildField(TypeList<std::unordered_set<LocalType>>,
     Priority<1>,
     InvokeContext& invoke_context,
     Value&& value,
@@ -20,7 +21,7 @@ void CustomBuildField(TypeList<std::set<LocalType>>,
 }
 
 template <typename LocalType, typename Input, typename ReadDest>
-decltype(auto) CustomReadField(TypeList<std::set<LocalType>>,
+decltype(auto) CustomReadField(TypeList<std::unordered_set<LocalType>>,
     Priority<1>,
     InvokeContext& invoke_context,
     Input&& input,
@@ -39,4 +40,4 @@ decltype(auto) CustomReadField(TypeList<std::set<LocalType>>,
 }
 } // namespace mp
 
-#endif // MP_PROXY_TYPE_SET_H
+#endif // MP_PROXY_TYPE_UNORDERED_SET_H

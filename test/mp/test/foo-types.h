@@ -25,6 +25,7 @@
 #include <mp/type-string.h>
 #include <mp/type-struct.h>
 #include <mp/type-threadmap.h>
+#include <mp/type-unordered-set.h>
 #include <mp/type-vector.h>
 #include <string>
 #include <type_traits>
