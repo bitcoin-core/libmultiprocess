@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <set>
+#include <unordered_set>
 #include <vector>
 
 namespace mp {
@@ -21,6 +22,7 @@ struct FooStruct
     std::string name;
     std::set<int> setint;
     std::vector<bool> vbool;
+    std::unordered_set<int> unorderedsetint;
 };
 
 enum class FooEnum : uint8_t { ONE = 1, TWO = 2, };
