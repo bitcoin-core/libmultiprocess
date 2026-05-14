@@ -16,12 +16,7 @@ void CustomBuildField(TypeList<std::vector<LocalType>>,
     Value&& value,
     Output&& output)
 {
-    // FIXME dedup with set handler below
-    auto list = output.init(value.size());
-    size_t i = 0;
-    for (auto it = value.begin(); it != value.end(); ++it, ++i) {
-        BuildField(TypeList<LocalType>(), invoke_context, ListOutput<typename decltype(list)::Builds>(list, i), *it);
-    }
+    BuildList(TypeList<LocalType>(), invoke_context, output, value);
 }
 
 inline static bool BuildPrimitive(InvokeContext& invoke_context, std::vector<bool>::const_reference value, TypeList<bool>)

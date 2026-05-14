@@ -16,13 +16,7 @@ void CustomBuildField(TypeList<std::set<LocalType>>,
     Value&& value,
     Output&& output)
 {
-    // FIXME dededup with vector handler above
-    auto list = output.init(value.size());
-    size_t i = 0;
-    for (const auto& elem : value) {
-        BuildField(TypeList<LocalType>(), invoke_context, ListOutput<typename decltype(list)::Builds>(list, i), elem);
-        ++i;
-    }
+    BuildList(TypeList<LocalType>(), invoke_context, output, value);
 }
 
 template <typename LocalType, typename Input, typename ReadDest>
