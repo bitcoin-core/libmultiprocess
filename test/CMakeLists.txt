@@ -37,4 +37,5 @@ if(BUILD_TESTING AND TARGET CapnProto::kj-test)
 
   add_dependencies(mptests mptest)
   add_test(NAME mptest COMMAND mptest)
+  set_target_properties(mptest PROPERTIES EXPORT_COMPILE_COMMANDS OFF)
 endif()
