@@ -26,6 +26,7 @@
 #include <kj/function.h>
 #include <kj/memory.h>
 #include <kj/string.h>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
@@ -36,6 +37,7 @@
 #include <tuple>
 #include <unistd.h>
 #include <utility>
+#include <vector>
 
 namespace mp {
 
@@ -414,6 +416,31 @@ kj::Promise<void> ProxyServer<Thread>::getName(GetNameContext context)
 }
 
 ProxyServer<ThreadMap>::ProxyServer(Connection& connection) : m_connection(connection) {}
+
+kj::Promise<void> ProxyServer<ThreadMap>::makePool(MakePoolContext context)
+{
+    if (!m_connection.m_thread_pool.empty()) {
+        throw std::runtime_error("makePool called on connection with existing pool");
+    }
+    EventLoop& loop{*m_connection.m_loop};
+    const auto& params = context.getParams();
+    const std::string pool_name = params.getName();
+    const uint32_t count = params.getCount();
+    for (uint32_t i = 0; i < count; ++i) {
+        const std::string thread_name = pool_name + "/pool/" + std::to_string(i);
+        std::promise<ThreadContext*> thread_context;
+        std::thread thread([&loop, &thread_context, thread_name]() {
+            g_thread_context.thread_name = ThreadName(loop.m_exe_name) + " (from " + thread_name + ")";
+            g_thread_context.waiter = std::make_unique<Waiter>();
+            Lock lock(g_thread_context.waiter->m_mutex);
+            thread_context.set_value(&g_thread_context);
+            g_thread_context.waiter->wait(lock, [] { return !g_thread_context.waiter; });
+        });
+        auto thread_server = kj::heap<ProxyServer<Thread>>(m_connection, *thread_context.get_future().get(), std::move(thread));
+        m_connection.m_thread_pool.push_back(m_connection.m_threads.add(kj::mv(thread_server)));
+    }
+    return kj::READY_NOW;
+}
 
 kj::Promise<void> ProxyServer<ThreadMap>::makeThread(MakeThreadContext context)
 {
