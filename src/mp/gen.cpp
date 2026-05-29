@@ -524,8 +524,8 @@ static void Generate(kj::StringPtr src_prefix,
                 std::ostringstream server_invoke_start;
                 std::ostringstream server_invoke_end;
                 int argc = 0;
-                for (const auto& field : fields) {
-                    if (field.skip) continue;
+                auto build_field = [&](const Field& field) {
+                    if (field.skip) return;
 
                     const auto& f = field.param_is_set ? field.param : field.result;
                     auto field_name = f.getProto().getName();
@@ -589,6 +589,16 @@ static void Generate(kj::StringPtr src_prefix,
                     server_invoke_start << ", Accessor<" << base_name << "_fields::" << Cap(field_name) << ", "
                                         << field_flags.str() << ">>(";
                     server_invoke_end << ")";
+                };
+
+                for (const auto& field : fields) {
+                    if (!field.retval) build_field(field);
+                }
+                // C++ return values appear after all method parameters in FunctionTraits.
+                // Keep this order even when the Cap'n Proto result field is declared
+                // earlier for wire compatibility.
+                for (const auto& field : fields) {
+                    if (field.retval) build_field(field);
                 }
 
                 const std::string static_str{is_construct || is_destroy ? "static " : ""};
