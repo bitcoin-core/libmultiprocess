@@ -138,6 +138,9 @@ KJ_TEST("Call FooInterface methods")
     KJ_EXPECT(ret == 7);
     foo->addInOut(3, ret);
     KJ_EXPECT(ret == 10);
+    std::string text;
+    KJ_EXPECT(foo->addResultOut(41, text) == 42);
+    KJ_EXPECT(text == "41");
 
     FooStruct in;
     in.name = "name";
