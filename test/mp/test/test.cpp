@@ -18,8 +18,10 @@
 #include <kj/async.h>
 #include <kj/async-io.h>
 #include <kj/common.h>
+#include <kj/exception.h>
 #include <kj/debug.h>
 #include <kj/memory.h>
+#include <kj/string.h>
 #include <kj/test.h>
 #include <memory>
 #include <mp/proxy.h>
@@ -522,6 +524,77 @@ KJ_TEST("Make simultaneous IPC calls on single remote thread")
         tc.waiter->wait(lock, [&running] { return running == 0; });
     }
     KJ_EXPECT(expected == 400);
+}
+
+KJ_TEST("Call async IPC method dispatched to pool thread")
+{
+    TestSetup setup;
+    ProxyClient<messages::FooInterface>* foo = setup.client.get();
+
+    // Set up the thread map exchange so the client has the server's ThreadMap,
+    // then call makePool to pre-allocate two server threads.
+    foo->initThreadMap();
+    setup.server->m_impl->m_int_fn = [](int n) { return n * 2; };
+
+    ThreadContext& tc{g_thread_context};
+    std::atomic<size_t> running{3};
+    std::promise<void> pool_ready;
+    foo->m_context.loop->sync([&] {
+        auto pool_req = foo->m_context.connection->m_thread_map.makePoolRequest();
+        pool_req.setCount(2);
+        foo->m_context.loop->m_task_set->add(
+            pool_req.send().then([&](auto&&) { pool_ready.set_value(); }));
+    });
+    pool_ready.get_future().get();
+
+    // Send three callIntFnAsync requests with no context.thread set.
+    // The server should dispatch each to a pool thread.
+    auto client{foo->m_client};
+    foo->m_context.loop->sync([&] {
+        for (size_t i = 0; i < running; ++i) {
+            auto request{client.callIntFnAsyncRequest()};
+            request.initContext(); // context present but thread unset
+            request.setArg(static_cast<int32_t>(i + 1));
+            foo->m_context.loop->m_task_set->add(request.send().then(
+                [&running, &tc, i](auto&& results) {
+                    assert(results.getResult() == static_cast<int32_t>((i + 1) * 2));
+                    running -= 1;
+                    Lock lock(tc.waiter->m_mutex);
+                    tc.waiter->m_cv.notify_all();
+                }));
+        }
+    });
+    {
+        Lock lock(tc.waiter->m_mutex);
+        tc.waiter->wait(lock, [&running] { return running == 0; });
+    }
+}
+
+KJ_TEST("Call async IPC method without thread or pool errors correctly")
+{
+    TestSetup setup;
+    ProxyClient<messages::FooInterface>* foo = setup.client.get();
+    setup.server->m_impl->m_fn = [] {};
+
+    // Send a callFnAsync request with no context.thread and no pool configured.
+    // The server should throw the "no thread specified and no pool configured" error.
+    std::promise<void> done;
+    bool error_thrown{false};
+    foo->m_context.loop->sync([&] {
+        auto request{foo->m_client.callFnAsyncRequest()};
+        request.initContext();
+        foo->m_context.loop->m_task_set->add(
+            request.send().then(
+                [&](auto&&) { done.set_value(); },
+                [&](kj::Exception&& e) {
+                    error_thrown = true;
+                    KJ_EXPECT(std::string_view{e.getDescription().cStr()}.find(
+                        "no thread specified and no pool configured") != std::string_view::npos);
+                    done.set_value();
+                }));
+    });
+    done.get_future().get();
+    KJ_EXPECT(error_thrown);
 }
 
 } // namespace test

@@ -477,6 +477,13 @@ public:
     //! ThreadMap.makeThread) used to service requests to clients.
     ::capnp::CapabilityServerSet<Thread> m_threads;
 
+    //! A thread created by makePool with associated pending work queue. Vector is filled once by makePool() and never resized.
+    struct PoolSlot {
+        Thread::Client client;
+        size_t depth{0};
+    };
+    std::vector<PoolSlot> m_thread_pool;
+
     //! Canceler for canceling promises that we want to discard when the
     //! connection is destroyed. This is used to interrupt method calls that are
     //! still executing at time of disconnection.
