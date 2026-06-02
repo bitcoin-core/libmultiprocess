@@ -314,11 +314,11 @@ static constexpr int FIELD_BOXED = 16;
 template <typename Field, int flags>
 struct Accessor : public Field
 {
-    static const bool in = flags & FIELD_IN;
-    static const bool out = flags & FIELD_OUT;
-    static const bool optional = flags & FIELD_OPTIONAL;
-    static const bool requested = flags & FIELD_REQUESTED;
-    static const bool boxed = flags & FIELD_BOXED;
+    static constexpr bool in = (flags & FIELD_IN) != 0;
+    static constexpr bool out = (flags & FIELD_OUT) != 0;
+    static constexpr bool optional = (flags & FIELD_OPTIONAL) != 0;
+    static constexpr bool requested = (flags & FIELD_REQUESTED) != 0;
+    static constexpr bool boxed = (flags & FIELD_BOXED) != 0;
 };
 
 //! Wrapper around std::function for passing std::function objects between client and servers.

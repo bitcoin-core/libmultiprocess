@@ -7,9 +7,11 @@
 
 #include <cerrno>
 #include <cstdio>
+#include <fcntl.h>
 #include <filesystem>
 #include <iostream>
 #include <kj/common.h>
+#include <kj/debug.h>
 #include <kj/string-tree.h>
 #include <pthread.h>
 #include <sstream>
@@ -116,12 +118,9 @@ std::string LogEscape(const kj::StringTree& string, size_t max_size)
     return result;
 }
 
-int SpawnProcess(int& pid, FdToArgsFn&& fd_to_args)
+std::tuple<ProcessId, SocketId> SpawnProcess(ConnectInfoToArgsFn&& connect_info_to_args)
 {
-    int fds[2];
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
-        throw std::system_error(errno, std::system_category(), "socketpair");
-    }
+    auto fds{SocketPair()};
 
     // Evaluate the callback and build the argv array before forking.
     //
@@ -129,10 +128,10 @@ int SpawnProcess(int& pid, FdToArgsFn&& fd_to_args)
     // locks at fork time. In that case, running code that allocates memory or
     // takes locks in the child between fork() and exec() can deadlock
     // indefinitely. Precomputing arguments in the parent avoids this.
-    const std::vector<std::string> args{fd_to_args(fds[0])};
+    const std::vector<std::string> args{connect_info_to_args(std::to_string(fds[0]))};
     const std::vector<char*> argv{MakeArgv(args)};
 
-    pid = fork();
+    ProcessId pid = fork();
     if (pid == -1) {
         throw std::system_error(errno, std::system_category(), "fork");
     }
@@ -160,6 +159,16 @@ int SpawnProcess(int& pid, FdToArgsFn&& fd_to_args)
             }
         }
 
+        // Explicitly clear FD_CLOEXEC on the child's socket before calling
+        // exec, so the fd survives into the spawned process regardless of how
+        // the socket was created.
+        int flags = fcntl(fds[0], F_GETFD);
+        if (flags == -1) throw std::system_error(errno, std::system_category(), "fcntl F_GETFD");
+        if (flags & FD_CLOEXEC) {
+            flags &= ~FD_CLOEXEC;
+            if (fcntl(fds[0], F_SETFD, flags) == -1) throw std::system_error(errno, std::system_category(), "fcntl F_SETFD");
+        }
+
         execvp(argv[0], argv.data());
         // NOTE: perror() is not async-signal-safe; calling it here in a
         // post-fork child may deadlock in multithreaded parents.
@@ -168,12 +177,27 @@ int SpawnProcess(int& pid, FdToArgsFn&& fd_to_args)
         perror("execvp failed");
         _exit(127);
     }
-    return fds[1];
+    return {pid, fds[1]};
 }
 
-void ExecProcess(const std::vector<std::string>& args)
+SocketId StartSpawned(const ConnectInfo& connect_info)
+{
+    return std::stoi(connect_info);
+}
+
+std::array<SocketId, 2> SocketPair()
+{
+    int pair[2];
+    KJ_SYSCALL(socketpair(AF_UNIX, SOCK_STREAM, 0, pair));
+    return {pair[0], pair[1]};
+}
+
+ProcessId ExecProcess(const std::vector<std::string>& args)
 {
     const std::vector<char*> argv{MakeArgv(args)};
+    ProcessId pid;
+    KJ_SYSCALL(pid = fork());
+    if (pid) return pid;
     if (execvp(argv[0], argv.data()) != 0) {
         perror("execvp failed");
         if (errno == ENOENT && !args.empty()) {
@@ -181,9 +205,10 @@ void ExecProcess(const std::vector<std::string>& args)
         }
         _exit(1);
     }
+    KJ_UNREACHABLE;
 }
 
-int WaitProcess(int pid)
+int WaitProcess(ProcessId pid)
 {
     int status;
     if (::waitpid(pid, &status, /*options=*/0) != pid) {
