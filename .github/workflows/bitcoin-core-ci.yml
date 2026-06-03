@@ -1,0 +1,14 @@
+name: Bitcoin Core CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bitcoin-core-ci:
+    uses: bitcoin-core/libmultiprocess/.github/workflows/bitcoin-core-ci.yml@support
+    secrets: inherit

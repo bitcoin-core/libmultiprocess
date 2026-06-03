@@ -1,0 +1,10 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    uses: bitcoin-core/libmultiprocess/.github/workflows/ci.yml@support
+    secrets: inherit
