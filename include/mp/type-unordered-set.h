@@ -27,16 +27,14 @@ decltype(auto) CustomReadField(TypeList<std::unordered_set<LocalType>>,
     Input&& input,
     ReadDest&& read_dest)
 {
-    return read_dest.update([&](auto& value) {
-        auto data = input.get();
-        value.clear();
-        for (auto item : data) {
-            ReadField(TypeList<LocalType>(), invoke_context, Make<ValueField>(item),
-                ReadDestEmplace(TypeList<const LocalType>(), [&](auto&&... args) -> auto& {
-                    return *value.emplace(std::forward<decltype(args)>(args)...).first;
-                }));
-        }
-    });
+    return ReadList(
+        TypeList<LocalType>(), invoke_context, input, read_dest,
+        [&](auto& value, size_t) {
+            value.clear();
+        },
+        [&](auto& value, auto&&... args) -> auto& {
+            return *value.emplace(std::forward<decltype(args)>(args)...).first;
+        });
 }
 } // namespace mp
 

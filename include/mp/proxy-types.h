@@ -291,6 +291,21 @@ void BuildList(TypeList<LocalType>, InvokeContext& invoke_context, Output&& outp
     }
 }
 
+template <typename LocalType, typename Input, typename ReadDest, typename InitFn, typename EmplaceFn>
+void ReadList(TypeList<LocalType>, InvokeContext& invoke_context, Input&& input, ReadDest&& read_dest, InitFn&& init, EmplaceFn&& emplace)
+{
+    read_dest.update([&](auto& value) {
+        auto data = input.get();
+        init(value, data.size());
+        for (auto item : data) {
+            ReadField(TypeList<LocalType>(), invoke_context, Make<ValueField>(item),
+                      ReadDestEmplace(TypeList<LocalType>(), [&emplace, &value](auto&&... args) -> decltype(auto) {
+                          return emplace(value, std::forward<decltype(args)>(args)...);
+                      }));
+        }
+    });
+}
+
 template <typename LocalType, typename Value, typename Output>
 void CustomBuildField(TypeList<LocalType>, Priority<0>, InvokeContext& invoke_context, Value&& value, Output&& output)
 {
