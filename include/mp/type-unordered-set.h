@@ -29,8 +29,9 @@ decltype(auto) CustomReadField(TypeList<std::unordered_set<LocalType>>,
 {
     return ReadList(
         TypeList<LocalType>(), invoke_context, input, read_dest,
-        [&](auto& value, size_t) {
+        [&](auto& value, size_t size) {
             value.clear();
+            value.reserve(size);
         },
         [&](auto& value, auto&&... args) -> auto& {
             return *value.emplace(std::forward<decltype(args)>(args)...).first;
