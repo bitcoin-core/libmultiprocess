@@ -7,8 +7,15 @@ Library versions are tracked with simple
 Versioning policy is described in the [version.h](../include/mp/version.h)
 include.
 
-## v11
+## v12
 - Current unstable version.
+
+## [v11.0](https://github.com/bitcoin-core/libmultiprocess/commits/v11.0)
+- Tolerates unexpected exceptions in event loop `post()` callbacks.
+- Tolerates exceptions from remote destroy during cleanup in `ProxyClient`.
+- Supports primitive `std::optional` struct fields in the code generator (`mpgen`).
+- Adds `TypeName()` and improves debug log coverage for Proxy object lifecycle.
+- Updates build compatibility with recent Nix and CMake versions.
 
 ## [v10.0](https://github.com/bitcoin-core/libmultiprocess/commits/v10.0)
 - Increases spawn test timeout to avoid spurious failures.
