@@ -8,7 +8,11 @@ export LC_ALL=C.UTF-8
 
 set -o errexit -o nounset -o pipefail -o xtrace
 
-[ "${CI_CONFIG+x}" ] && source "$CI_CONFIG"
+# Change to the support branch root (two levels up from this script) so that
+# shell.nix and CMakeLists.txt can be referenced without a path prefix.
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
+
+[ "${CI_CONFIG+x}" ] && source "ci/configs/${CI_CONFIG}.bash"
 
 nix develop --ignore-environment --keep CI_CONFIG --keep CI_CLEAN "${NIX_ARGS[@]+"${NIX_ARGS[@]}"}" -f shell.nix --command ci/scripts/ci.sh
 

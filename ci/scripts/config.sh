@@ -14,7 +14,7 @@ readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 source "${SCRIPT_DIR}/ci_helpers.sh"
 
-[ "${CI_CONFIG+x}" ] && source "$CI_CONFIG"
+[ "${CI_CONFIG+x}" ] && source "${SCRIPT_DIR}/../configs/${CI_CONFIG}.bash"
 
 # Resolve the nixpkgs channel to a specific revision for use in cache keys.
 if [[ -n "${NIXPKGS_CHANNEL:-}" ]]; then

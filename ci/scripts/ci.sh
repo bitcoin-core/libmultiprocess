@@ -8,11 +8,11 @@ export LC_ALL=C.UTF-8
 
 set -o errexit -o nounset -o pipefail -o xtrace
 
-[ "${CI_CONFIG+x}" ] && source "$CI_CONFIG"
+[ "${CI_CONFIG+x}" ] && source "ci/configs/${CI_CONFIG}.bash"
 
 : "${CI_DIR:=build}"
 if ! [ -v BUILD_TARGETS ]; then
-  BUILD_TARGETS=(all tests mpexamples)
+  BUILD_TARGETS=(all mptests mpexamples)
 fi
 
 [ -n "${CI_CLEAN-}" ] && rm -rf "${CI_DIR}"
