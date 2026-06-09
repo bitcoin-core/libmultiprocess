@@ -655,7 +655,14 @@ struct CapRequestTraits<::capnp::Request<_Params, _Results>>
 template <typename Client>
 void clientDestroy(Client& client)
 {
-    if (client.m_context.connection) {
+    // Lock because m_context.connection can be cleared concurrently by the
+    // disconnect cleanup callback (see addSyncCleanup on ProxyClientBase constructor).
+    bool connected;
+    {
+        Lock lock{client.m_context.loop->m_mutex};
+        connected = client.m_context.connection != nullptr;
+    }
+    if (connected) {
         MP_LOG(*client.m_context.loop, Log::Debug) << "IPC client destroy " << CxxTypeName(client);
     } else {
         KJ_LOG(INFO, "IPC interrupted client destroy", CxxTypeName(client));
