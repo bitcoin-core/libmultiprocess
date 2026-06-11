@@ -54,7 +54,7 @@ interface FooFn $Proxy.wrap("ProxyCallback<std::function<int()>>") {
 struct FooStruct $Proxy.wrap("mp::test::FooStruct") {
     name @0 :Text;
     setInt @1 :List(Int32) $Proxy.name("set_int");
-    vBool @2 :List(Bool) $Proxy.name("v_bool");
+    vectorBool @2 :List(Bool) $Proxy.name("vector_bool");
     optionalInt @3 :Int32 $Proxy.name("optional_int");
     hasOptionalInt @4 :Bool;
     unorderedSetInt @5 :List(Int32) $Proxy.name("unordered_set_int");
