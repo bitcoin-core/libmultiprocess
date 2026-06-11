@@ -56,18 +56,12 @@ decltype(auto) CustomReadField(TypeList<std::map<KeyLocalType, ValueLocalType>>,
     Input&& input,
     ReadDest&& read_dest)
 {
-    return read_dest.update([&](auto& value) {
-        auto data = input.get();
-        value.clear();
-        for (auto item : data) {
-            ReadField(TypeList<std::pair<const KeyLocalType, ValueLocalType>>(), invoke_context,
-                Make<ValueField>(item),
-                ReadDestEmplace(
-                    TypeList<std::pair<const KeyLocalType, ValueLocalType>>(), [&](auto&&... args) -> auto& {
-                        return *EmplacePiecewiseSafe(value, std::forward<decltype(args)>(args)...).first;
-                    }));
-        }
-    });
+    return ReadList(
+        TypeList<std::pair<const KeyLocalType, ValueLocalType>>(), invoke_context, input, read_dest,
+        [&](auto& value, size_t) { value.clear(); },
+        [&](auto& value, auto&&... args) -> auto& {
+            return *EmplacePiecewiseSafe(value, std::forward<decltype(args)>(args)...).first;
+        });
 }
 } // namespace mp
 
