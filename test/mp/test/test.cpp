@@ -21,6 +21,7 @@
 #include <kj/debug.h>
 #include <kj/memory.h>
 #include <kj/test.h>
+#include <map>
 #include <memory>
 #include <mp/proxy.h>
 #include <mp/proxy.capnp.h>
@@ -150,6 +151,8 @@ KJ_TEST("Call FooInterface methods")
     in.v_bool.push_back(true);
     in.v_bool.push_back(false);
     in.optional_int = 3;
+    in.map_string_int.emplace("a", 1);
+    in.map_string_int.emplace("b", 2);
     FooStruct out = foo->pass(in);
     KJ_EXPECT(in.name == out.name);
     KJ_EXPECT(in.set_int.size() == out.set_int.size());
@@ -165,6 +168,11 @@ KJ_TEST("Call FooInterface methods")
         KJ_EXPECT(in.v_bool[i] == out.v_bool[i]);
     }
     KJ_EXPECT(in.optional_int == out.optional_int);
+    KJ_EXPECT(in.map_string_int.size() == out.map_string_int.size());
+    for (auto init{in.map_string_int.begin()}, outit{out.map_string_int.begin()}; init != in.map_string_int.end() && outit != out.map_string_int.end(); ++init, ++outit) {
+        KJ_EXPECT(init->first == outit->first);
+        KJ_EXPECT(init->second == outit->second);
+    }
 
     // Additional checks for std::optional member
     KJ_EXPECT(foo->pass(in).optional_int == 3);

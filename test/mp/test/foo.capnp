@@ -59,6 +59,7 @@ struct FooStruct $Proxy.wrap("mp::test::FooStruct") {
     optionalInt @3 :Int32 $Proxy.name("optional_int");
     hasOptionalInt @4 :Bool;
     unorderedSetInt @5 :List(Int32) $Proxy.name("unordered_set_int");
+    mapStringInt @6 :List(StringIntPair) $Proxy.name("map_string_int");
 }
 
 struct FooCustom $Proxy.wrap("mp::test::FooCustom") {
@@ -80,4 +81,9 @@ struct FooMutable {
 struct Pair(T1, T2) {
     first @0 :T1;
     second @1 :T2;
+}
+
+struct StringIntPair {
+    first @0 :Text;
+    second @1 :Int32;
 }
