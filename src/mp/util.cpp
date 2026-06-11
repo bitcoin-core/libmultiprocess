@@ -2,7 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <mp/config.h>
+#include <mp/config.h> // IWYU pragma: keep
 #include <mp/util.h>
 
 #include <cerrno>
@@ -11,7 +11,7 @@
 #include <iostream>
 #include <kj/common.h>
 #include <kj/string-tree.h>
-#include <pthread.h>
+#include <pthread.h> // IWYU pragma: keep
 #include <sstream>
 #include <string>
 #include <sys/types.h>
