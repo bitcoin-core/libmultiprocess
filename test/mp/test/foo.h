@@ -22,9 +22,10 @@ struct FooStruct
 {
     std::string name;
     std::set<int> set_int;
-    std::vector<bool> v_bool;
+    std::vector<bool> vector_bool;
     std::optional<int> optional_int;
     std::unordered_set<int> unordered_set_int;
+    std::map<std::string, int> map_string_int;
 };
 
 enum class FooEnum : uint8_t { ONE = 1, TWO = 2, };
@@ -71,7 +72,6 @@ public:
     int add(int a, int b) { return a + b; }
     void addOut(int a, int b, int& out) { out = a + b; }
     void addInOut(int x, int& sum) { sum += x; }
-    int mapSize(const std::map<std::string, std::string>& map) { return map.size(); }
     FooStruct pass(FooStruct foo) { return foo; }
     void raise(FooStruct foo) { throw foo; }
     void initThreadMap() {}
