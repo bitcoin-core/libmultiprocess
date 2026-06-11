@@ -9,15 +9,22 @@
 name: Bitcoin Core CI
 
 on:
-  push:
-  pull_request:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_call:
+    inputs:
+      source_ref:
+        description: 'Ref of libmultiprocess source to test. Defaults to the caller ref (github.sha).'
+        required: false
+        type: string
+      support_ref:
+        description: 'Ref of support branch to use for CI scripts. Defaults to support HEAD.'
+        required: false
+        type: string
+        default: 'support'
 
 env:
   BITCOIN_REPO: bitcoin/bitcoin
+  # Temporary: use PR #35454 until it merges; revert to refs/heads/master after
+  BITCOIN_CORE_REF: refs/pull/35454/merge
   LLVM_VERSION: 22
   LIBCXX_DIR: /tmp/libcxx-build/
 
@@ -79,38 +86,48 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.BITCOIN_REPO }}
+          ref: ${{ env.BITCOIN_CORE_REF }}
           fetch-depth: 1
 
       - name: Checkout libmultiprocess
         uses: actions/checkout@v4
         with:
           path: _libmultiprocess
+          ref: ${{ inputs.source_ref || github.sha }}
+          repository: ${{ github.repository }}
+
+      - name: Checkout support branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.support_ref }}
+          path: support
+          repository: ${{ github.repository }}
 
       - name: Replace libmultiprocess subtree
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh replace_subtree
+        run: support/ci/scripts/bitcoin_core_ci.sh replace_subtree
 
       - name: Add LLVM apt repository
         if: matrix.apt-llvm
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh add_llvm_apt_repository
+        run: support/ci/scripts/bitcoin_core_ci.sh add_llvm_apt_repository
 
       - name: Install APT packages
         if: matrix.packages
-        run: _libmultiprocess/ci/scripts/ci_helpers.sh install_apt_packages ${{ matrix.packages }}
+        run: support/ci/scripts/ci_helpers.sh install_apt_packages ${{ matrix.packages }}
 
       - name: Configure LLVM alternatives
         if: matrix.packages
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh install_llvm_alternatives
+        run: support/ci/scripts/bitcoin_core_ci.sh install_llvm_alternatives
 
       - name: Install Homebrew packages
         if: matrix.brew-packages
-        run: _libmultiprocess/ci/scripts/ci_helpers.sh install_homebrew_packages ${{ matrix.brew-packages }}
+        run: support/ci/scripts/ci_helpers.sh install_homebrew_packages ${{ matrix.brew-packages }}
 
       - name: Install pip packages
         if: matrix.pip-packages
-        run: _libmultiprocess/ci/scripts/ci_helpers.sh install_pip_packages ${{ matrix.pip-packages }}
+        run: support/ci/scripts/ci_helpers.sh install_pip_packages ${{ matrix.pip-packages }}
 
       - name: Determine parallelism
-        run: _libmultiprocess/ci/scripts/ci_helpers.sh determine_parallelism "${{ matrix.nproc_multiplier }}"
+        run: support/ci/scripts/ci_helpers.sh determine_parallelism "${{ matrix.nproc_multiplier }}"
 
       - name: Restore ccache
         id: ccache-restore
@@ -124,26 +141,26 @@ jobs:
 
       - name: Reset ccache stats
         if: matrix.packages || matrix.brew-packages
-        run: _libmultiprocess/ci/scripts/ci_helpers.sh reset_ccache_stats
+        run: support/ci/scripts/ci_helpers.sh reset_ccache_stats
 
       - name: CMake configure
         env:
           BITCOIN_CORE_CMAKE_ARGS: ${{ matrix.cmake-args }}
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh configure_bitcoin_core
+        run: support/ci/scripts/bitcoin_core_ci.sh configure_bitcoin_core
 
       - name: Build
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh build_bitcoin_core
+        run: support/ci/scripts/bitcoin_core_ci.sh build_bitcoin_core
 
       - name: Show ccache stats
         if: matrix.packages || matrix.brew-packages
-        run: _libmultiprocess/ci/scripts/ci_helpers.sh show_ccache_stats
+        run: support/ci/scripts/ci_helpers.sh show_ccache_stats
 
       - name: Run IPC unit tests
         env:
           ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1
           LSAN_OPTIONS: suppressions=${{ github.workspace }}/test/sanitizer_suppressions/lsan
           UBSAN_OPTIONS: suppressions=${{ github.workspace }}/test/sanitizer_suppressions/ubsan:print_stacktrace=1:halt_on_error=1:report_error_type=1
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh run_ipc_unit_tests "${{ matrix.unit_test_runs }}"
+        run: support/ci/scripts/bitcoin_core_ci.sh run_ipc_unit_tests "${{ matrix.unit_test_runs }}"
 
       - name: Run IPC functional tests
         env:
@@ -151,7 +168,7 @@ jobs:
           LSAN_OPTIONS: suppressions=${{ github.workspace }}/test/sanitizer_suppressions/lsan
           UBSAN_OPTIONS: suppressions=${{ github.workspace }}/test/sanitizer_suppressions/ubsan:print_stacktrace=1:halt_on_error=1:report_error_type=1
           CI_FAILFAST_TEST_LEAVE_DANGLING: 1
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh run_ipc_functional_tests "${{ matrix.functional_test_runs }}" "${{ matrix.functional_timeout_factor }}"
+        run: support/ci/scripts/bitcoin_core_ci.sh run_ipc_functional_tests "${{ matrix.functional_test_runs }}" "${{ matrix.functional_timeout_factor }}"
 
       - name: Save ccache
         uses: actions/cache/save@v4
@@ -195,21 +212,31 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.BITCOIN_REPO }}
+          ref: ${{ env.BITCOIN_CORE_REF }}
           fetch-depth: 1
 
       - name: Checkout libmultiprocess
         uses: actions/checkout@v4
         with:
           path: _libmultiprocess
+          ref: ${{ inputs.source_ref || github.sha }}
+          repository: ${{ github.repository }}
+
+      - name: Checkout support branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.support_ref }}
+          path: support
+          repository: ${{ github.repository }}
 
       - name: Add LLVM apt repository
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh add_llvm_apt_repository
+        run: support/ci/scripts/bitcoin_core_ci.sh add_llvm_apt_repository
 
       - name: Install packages
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh install_tsan_packages
+        run: support/ci/scripts/bitcoin_core_ci.sh install_tsan_packages
 
       - name: Determine parallelism
-        run: _libmultiprocess/ci/scripts/ci_helpers.sh determine_parallelism "${{ matrix.nproc_multiplier }}"
+        run: support/ci/scripts/ci_helpers.sh determine_parallelism "${{ matrix.nproc_multiplier }}"
 
       - name: Restore instrumented libc++ cache
         id: libcxx-cache
@@ -220,11 +247,11 @@ jobs:
 
       - name: Build instrumented libc++
         if: steps.libcxx-cache.outputs.cache-hit != 'true'
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh build_instrumented_libcxx
+        run: support/ci/scripts/bitcoin_core_ci.sh build_instrumented_libcxx
 
       - name: Determine host
         id: host
-        run: _libmultiprocess/ci/scripts/ci_helpers.sh determine_host
+        run: support/ci/scripts/ci_helpers.sh determine_host
 
       - name: Restore depends cache
         id: depends-cache
@@ -237,7 +264,7 @@ jobs:
 
       - name: Build depends (stage 1, without IPC)
         if: steps.depends-cache.outputs.cache-hit != 'true'
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh build_depends_without_ipc
+        run: support/ci/scripts/bitcoin_core_ci.sh build_depends_without_ipc
 
       - name: Save depends cache
         uses: actions/cache/save@v4
@@ -249,10 +276,10 @@ jobs:
           key: depends-tsan-${{ hashFiles('depends/packages/*.mk') }}-${{ env.LLVM_VERSION }}
 
       - name: Replace libmultiprocess subtree
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh replace_subtree
+        run: support/ci/scripts/bitcoin_core_ci.sh replace_subtree
 
       - name: Build depends (stage 2, IPC packages including libmultiprocess)
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh build_depends_with_ipc
+        run: support/ci/scripts/bitcoin_core_ci.sh build_depends_with_ipc
 
       - name: Restore ccache
         id: ccache-restore
@@ -265,7 +292,7 @@ jobs:
             ccache-TSan-
 
       - name: Reset ccache stats
-        run: _libmultiprocess/ci/scripts/ci_helpers.sh reset_ccache_stats
+        run: support/ci/scripts/ci_helpers.sh reset_ccache_stats
 
       - name: CMake configure
         env:
@@ -273,24 +300,24 @@ jobs:
             -DSANITIZERS=thread
             -DAPPEND_CPPFLAGS=-DARENA_DEBUG -DDEBUG_LOCKCONTENTION -D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES
             -DCMAKE_TOOLCHAIN_FILE=depends/${{ steps.host.outputs.host }}/toolchain.cmake
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh configure_bitcoin_core
+        run: support/ci/scripts/bitcoin_core_ci.sh configure_bitcoin_core
 
       - name: Build
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh build_bitcoin_core
+        run: support/ci/scripts/bitcoin_core_ci.sh build_bitcoin_core
 
       - name: Show ccache stats
-        run: _libmultiprocess/ci/scripts/ci_helpers.sh show_ccache_stats
+        run: support/ci/scripts/ci_helpers.sh show_ccache_stats
 
       - name: Run IPC unit tests
         env:
           LD_LIBRARY_PATH: depends/${{ steps.host.outputs.host }}/lib
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh run_ipc_unit_tests "${{ matrix.unit_test_runs }}"
+        run: support/ci/scripts/bitcoin_core_ci.sh run_ipc_unit_tests "${{ matrix.unit_test_runs }}"
 
       - name: Run IPC functional tests
         env:
           LD_LIBRARY_PATH: depends/${{ steps.host.outputs.host }}/lib
           CI_FAILFAST_TEST_LEAVE_DANGLING: 1
-        run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh run_ipc_functional_tests "${{ matrix.functional_test_runs }}" "${{ matrix.functional_timeout_factor }}"
+        run: support/ci/scripts/bitcoin_core_ci.sh run_ipc_functional_tests "${{ matrix.functional_test_runs }}" "${{ matrix.functional_timeout_factor }}"
 
       - name: Save ccache
         uses: actions/cache/save@v4

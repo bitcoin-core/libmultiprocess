@@ -1,0 +1,24 @@
+name: CI (support branch)
+
+# Trigger CI for pushes and PRs against the support branch.
+# Builds the C++ source from master and tests it using the CI scripts from
+# this branch (or PR branch), so that support branch changes can be validated.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    with:
+      source_ref: refs/heads/master
+      support_ref: ${{ github.sha }}
+    secrets: inherit
+
+  bitcoin-core-ci:
+    uses: ./.github/workflows/bitcoin-core-ci.yml
+    with:
+      source_ref: refs/heads/master
+      support_ref: ${{ github.sha }}
+    secrets: inherit

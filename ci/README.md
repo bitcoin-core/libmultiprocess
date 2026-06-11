@@ -16,11 +16,11 @@ All CI is just bash and nix.
 To run jobs locally:
 
 ```bash
-CI_CONFIG=ci/configs/default.bash  ci/scripts/run.sh
-CI_CONFIG=ci/configs/llvm.bash     ci/scripts/run.sh
-CI_CONFIG=ci/configs/gnu32.bash    ci/scripts/run.sh
-CI_CONFIG=ci/configs/sanitize.bash ci/scripts/run.sh
-CI_CONFIG=ci/configs/olddeps.bash  ci/scripts/run.sh
+CI_CONFIG=default  ci/scripts/run.sh
+CI_CONFIG=llvm     ci/scripts/run.sh
+CI_CONFIG=gnu32    ci/scripts/run.sh
+CI_CONFIG=sanitize ci/scripts/run.sh
+CI_CONFIG=olddeps  ci/scripts/run.sh
 ```
 
 By default CI jobs will reuse their build directories. `CI_CLEAN=1` can be specified to delete them before running instead.
@@ -48,5 +48,3 @@ macOS or Linux:
     -j build \
     --matrix config:sanitize
   ```
-
-

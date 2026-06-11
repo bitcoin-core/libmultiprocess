@@ -1,8 +1,17 @@
 name: CI
 
 on:
-  push:
-  pull_request:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: 'Ref of C++ source to build. Defaults to the caller ref (github.sha).'
+        required: false
+        type: string
+      support_ref:
+        description: 'Ref of support branch to use for CI scripts. Defaults to support HEAD.'
+        required: false
+        type: string
+        default: 'support'
 
 jobs:
   build-netbsd:
@@ -23,6 +32,16 @@ jobs:
             capnproto-cppflags: 'CPPFLAGS="-DKJ_NO_EXCEPTIONS=0"'
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          repository: ${{ github.repository }}
+
+      - name: Checkout support branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.support_ref }}
+          path: support
+          repository: ${{ github.repository }}
 
       - name: Start NetBSD VM
         uses: vmactions/netbsd-vm@v1
@@ -62,8 +81,8 @@ jobs:
 
       - name: Run CI script
         run: |
-          cd ${{ github.workspace }}
-          CI_CONFIG="ci/configs/netbsd.bash" bash ci/scripts/ci.sh
+          cd "${{ github.workspace }}/support"
+          CI_CONFIG="netbsd" bash ci/scripts/ci.sh
 
   build-openbsd:
     runs-on: ubuntu-latest
@@ -73,6 +92,16 @@ jobs:
         shell: openbsd {0}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          repository: ${{ github.repository }}
+
+      - name: Checkout support branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.support_ref }}
+          path: support
+          repository: ${{ github.repository }}
 
       - name: Start OpenBSD VM
         uses: vmactions/openbsd-vm@v1
@@ -84,8 +113,8 @@ jobs:
 
       - name: Run CI script
         run: |
-          cd ${{ github.workspace }}
-          CI_CONFIG="ci/configs/openbsd.bash" bash ci/scripts/ci.sh
+          cd "${{ github.workspace }}/support"
+          CI_CONFIG="openbsd" bash ci/scripts/ci.sh
 
   build-freebsd:
     runs-on: ubuntu-latest
@@ -95,6 +124,16 @@ jobs:
         shell: freebsd {0}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          repository: ${{ github.repository }}
+
+      - name: Checkout support branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.support_ref }}
+          path: support
+          repository: ${{ github.repository }}
 
       - name: Start FreeBSD VM
         uses: vmactions/freebsd-vm@v1
@@ -106,8 +145,8 @@ jobs:
 
       - name: Run CI script
         run: |
-          cd ${{ github.workspace }}
-          CI_CONFIG="ci/configs/freebsd.bash" bash ci/scripts/ci.sh
+          cd "${{ github.workspace }}/support"
+          CI_CONFIG="freebsd" bash ci/scripts/ci.sh
 
   build-macos:
     runs-on: macos-latest
@@ -115,6 +154,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          repository: ${{ github.repository }}
+
+      - name: Checkout support branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.support_ref }}
+          path: support
+          repository: ${{ github.repository }}
 
       - name: Install dependencies
         env:
@@ -125,7 +174,8 @@ jobs:
       - name: Run CI script
         run: |
           export PATH="$(brew --prefix llvm)/bin:$PATH"
-          CI_CONFIG="ci/configs/macos.bash" bash ci/scripts/ci.sh
+          cd "${{ github.workspace }}/support"
+          CI_CONFIG="macos" bash ci/scripts/ci.sh
 
   build:
     runs-on: ubuntu-latest
@@ -148,12 +198,22 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          repository: ${{ github.repository }}
+
+      - name: Checkout support branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.support_ref }}
+          path: support
+          repository: ${{ github.repository }}
 
       - name: Determine CI configuration
         id: config
         env:
-          CI_CONFIG: ci/configs/${{ matrix.config }}.bash
-        run: ci/scripts/config.sh
+          CI_CONFIG: ${{ matrix.config }}
+        run: support/ci/scripts/config.sh
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31       # 2025-05-27, from https://github.com/cachix/install-nix-action/tags
@@ -170,7 +230,7 @@ jobs:
         if: steps.config.outputs.cache_nix_store == 'true'
         uses: nix-community/cache-nix-action@v7
         with:
-          primary-key: nix-${{ runner.os }}-${{ matrix.config }}-${{ steps.config.outputs.nixpkgs_rev }}-${{ hashFiles('shell.nix', 'ci/patches/*.patch', format('ci/configs/{0}.bash', matrix.config)) }}
+          primary-key: nix-${{ runner.os }}-${{ matrix.config }}-${{ steps.config.outputs.nixpkgs_rev }}-${{ hashFiles('support/shell.nix', 'support/ci/patches/*.patch', format('support/ci/configs/{0}.bash', matrix.config)) }}
           restore-prefixes-first-match: |
             nix-${{ runner.os }}-${{ matrix.config }}-${{ steps.config.outputs.nixpkgs_rev }}-
             nix-${{ runner.os }}-${{ matrix.config }}-
@@ -179,5 +239,5 @@ jobs:
 
       - name: Run CI script
         env:
-          CI_CONFIG: ci/configs/${{ matrix.config }}.bash
-        run: ci/scripts/run.sh
+          CI_CONFIG: ${{ matrix.config }}
+        run: support/ci/scripts/run.sh

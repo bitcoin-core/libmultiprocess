@@ -1,8 +1,18 @@
-# libmultiprocess
+# libmultiprocess (support branch)
 
-`libmultiprocess` is a C++ library and code generator making it easy to call functions and reference objects in different processes.
+This branch contains CI scripts, documentation, and examples supporting the
+libmultiprocess library.
 
-For more information see the [usage instructions](doc/usage.md), [installation instructions](doc/install.md), or [design documentation](doc/design.md).
+Contents:
 
-If you have any questions, comments, or feedback, please submit an [issue](https://github.com/bitcoin-core/libmultiprocess/issues/new).
-Duplicate issues are perfectly fine and all discussion about the project is welcome, since there isn't another discussion forum currently.
+- [`ci/`](ci/) — CI scripts, configs, and patches
+- [`doc/`](doc/) — design, usage, and installation documentation
+- [`example/`](example/) — example C++ code
+- [`CMakeLists.txt`](CMakeLists.txt) — CMake project for building example code
+- [`shell.nix`](shell.nix) — Nix development environment
+
+The `CMakeLists.txt` file assumes it is checked out to a subdirectory of the
+libmultiprocess library source code (this can be controlled with the
+`MP_SOURCE_DIR` option), and the library can be found one level up.
+
+See [ci/README.md](ci/README.md) for instructions on running CI jobs locally.
