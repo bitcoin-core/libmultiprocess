@@ -15,7 +15,6 @@ interface FooInterface $Proxy.wrap("mp::test::FooImplementation") {
     add @0 (a :Int32, b :Int32) -> (result :Int32);
     addOut @19 (a :Int32, b :Int32) -> (ret :Int32);
     addInOut @20 (x :Int32, sum :Int32) -> (sum :Int32);
-    mapSize @1 (map :List(Pair(Text, Text))) -> (result :Int32);
     pass @2 (arg :FooStruct) -> (result :FooStruct);
     raise @3 (arg :FooStruct) -> (error :FooStruct $Proxy.exception("mp::test::FooStruct"));
     initThreadMap @4 (threadMap: Proxy.ThreadMap) -> (threadMap :Proxy.ThreadMap);
@@ -30,7 +29,7 @@ interface FooInterface $Proxy.wrap("mp::test::FooImplementation") {
     passMessage @13 (arg :FooMessage) -> (result :FooMessage);
     passMutable @14 (arg :FooMutable) -> (arg :FooMutable);
     passEnum @15 (arg :Int32) -> (result :Int32);
-    passDouble @23 (arg :Float64) -> (result :Float64);
+    passDouble @1 (arg :Float64) -> (result :Float64);
     passFn @16 (context :Proxy.Context, fn :FooFn) -> (result :Int32);
     callFn @17 () -> ();
     callFnAsync @18 (context :Proxy.Context) -> ();
@@ -76,11 +75,6 @@ struct FooMessage {
 
 struct FooMutable {
     message @0 :Text;
-}
-
-struct Pair(T1, T2) {
-    first @0 :T1;
-    second @1 :T2;
 }
 
 struct StringIntPair {
