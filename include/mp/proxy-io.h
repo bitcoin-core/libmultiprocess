@@ -477,6 +477,11 @@ public:
     //! ThreadMap.makeThread) used to service requests to clients.
     ::capnp::CapabilityServerSet<Thread> m_threads;
 
+    //! Thread pool populated by ThreadMap.makePool(). When a request arrives
+    //! with no context.thread set, PassField round-robins across these threads.
+    std::vector<Thread::Client> m_thread_pool;
+    size_t m_thread_pool_index{0};
+
     //! Canceler for canceling promises that we want to discard when the
     //! connection is destroyed. This is used to interrupt method calls that are
     //! still executing at time of disconnection.

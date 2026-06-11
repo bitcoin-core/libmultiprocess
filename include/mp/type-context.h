@@ -201,20 +201,38 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
     const auto& params = server_context.call_context.getParams();
     Context::Reader context_arg = Accessor::get(params);
     auto thread_client = context_arg.getThread();
-    auto result = server.m_context.connection->m_threads.getLocalServer(thread_client)
-        .then([&loop, invoke = kj::mv(invoke), req](const kj::Maybe<Thread::Server&>& perhaps) mutable {
-            // Assuming the thread object is found, pass it a pointer to the
-            // `invoke` lambda above which will invoke the function on that
-            // thread.
+    auto* connection = server.m_context.connection;
+    auto result = connection->m_threads.getLocalServer(thread_client)
+        .then([&loop, invoke = kj::mv(invoke), req, connection](const kj::Maybe<Thread::Server&>& perhaps) mutable {
+            // If the client specified a thread, dispatch to it directly.
             KJ_IF_MAYBE (thread_server, perhaps) {
                 auto& thread = static_cast<ProxyServer<Thread>&>(*thread_server);
                 MP_LOG(loop, Log::Debug)
                     << "IPC server post request  #" << req << " {" << thread.m_thread_context.thread_name << "}";
                 return thread.template post<typename ServerContext::CallContext>(std::move(invoke));
             } else {
-                MP_LOG(loop, Log::Error)
-                    << "IPC server error request #" << req << ", missing thread to execute request";
-                throw std::runtime_error("invalid thread handle");
+                // No thread specified — fall back to the connection's thread
+                // pool (populated by ThreadMap.makePool). Error if no pool.
+                auto& pool = connection->m_thread_pool;
+                if (pool.empty()) {
+                    MP_LOG(loop, Log::Error)
+                        << "IPC server error request #" << req << ", no thread specified and no pool configured";
+                    throw std::runtime_error("no thread specified and no pool configured");
+                }
+                size_t idx = connection->m_thread_pool_index++ % pool.size();
+                return connection->m_threads.getLocalServer(pool[idx])
+                    .then([&loop, invoke = kj::mv(invoke), req](const kj::Maybe<Thread::Server&>& pool_perhaps) mutable {
+                        KJ_IF_MAYBE (pt, pool_perhaps) {
+                            auto& pool_thread = static_cast<ProxyServer<Thread>&>(*pt);
+                            MP_LOG(loop, Log::Debug)
+                                << "IPC server post request  #" << req << " {" << pool_thread.m_thread_context.thread_name << "}";
+                            return pool_thread.template post<typename ServerContext::CallContext>(std::move(invoke));
+                        } else {
+                            MP_LOG(loop, Log::Error)
+                                << "IPC server error request #" << req << ", pool thread not found";
+                            throw std::runtime_error("pool thread not found");
+                        }
+                    });
             }
         }, [&loop, req](::kj::Exception&& e) -> kj::Promise<typename ServerContext::CallContext> {
             // If you see the error "(remote):0: failed: remote exception:
