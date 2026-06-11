@@ -131,7 +131,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      NIXPKGS_CHANNEL: nixos-25.05
+      NIXPKGS_CHANNEL: nixos-26.05
       NIX_EXTRA_CONFIG: |
         keep-env-derivations = true
         keep-outputs = true
