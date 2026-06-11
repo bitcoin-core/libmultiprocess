@@ -147,9 +147,9 @@ KJ_TEST("Call FooInterface methods")
     in.set_int.insert(1);
     in.unordered_set_int.insert(2);
     in.unordered_set_int.insert(1);
-    in.v_bool.push_back(false);
-    in.v_bool.push_back(true);
-    in.v_bool.push_back(false);
+    in.vector_bool.push_back(false);
+    in.vector_bool.push_back(true);
+    in.vector_bool.push_back(false);
     in.optional_int = 3;
     in.map_string_int.emplace("a", 1);
     in.map_string_int.emplace("b", 2);
@@ -163,9 +163,9 @@ KJ_TEST("Call FooInterface methods")
     for (const auto& elem : in.unordered_set_int) {
         KJ_EXPECT(out.unordered_set_int.count(elem) == 1);
     }
-    KJ_EXPECT(in.v_bool.size() == out.v_bool.size());
-    for (size_t i = 0; i < in.v_bool.size(); ++i) {
-        KJ_EXPECT(in.v_bool[i] == out.v_bool[i]);
+    KJ_EXPECT(in.vector_bool.size() == out.vector_bool.size());
+    for (size_t i = 0; i < in.vector_bool.size(); ++i) {
+        KJ_EXPECT(in.vector_bool[i] == out.vector_bool[i]);
     }
     KJ_EXPECT(in.optional_int == out.optional_int);
     KJ_EXPECT(in.map_string_int.size() == out.map_string_int.size());
