@@ -655,7 +655,14 @@ struct CapRequestTraits<::capnp::Request<_Params, _Results>>
 template <typename Client>
 void clientDestroy(Client& client)
 {
-    MP_LOG(*client.m_context.loop, Log::Debug) << "IPC client destroy " << CxxTypeName(client);
+    // Lock is needed because the sync cleanup callback on the event loop
+    // thread can concurrently set m_context.connection to nullptr.
+    Lock lock{client.m_context.loop->m_mutex};
+    if (client.m_context.connection) {
+        MP_LOG(*client.m_context.loop, Log::Debug) << "IPC client destroy " << CxxTypeName(client);
+    } else {
+        KJ_LOG(INFO, "IPC interrupted client destroy", CxxTypeName(client));
+    }
 }
 
 template <typename Server>
