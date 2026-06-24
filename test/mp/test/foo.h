@@ -66,6 +66,10 @@ public:
     virtual int callExtended(int arg) = 0;
 };
 
+class FooInit
+{
+};
+
 class FooImplementation
 {
 public:
