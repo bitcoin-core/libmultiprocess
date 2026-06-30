@@ -156,6 +156,31 @@ public:
     WorkerThread m_worker;
 };
 
+//! Fixed-size pool of WorkerThreads. Requests are dispatched round-robin
+//! across the pool. Owned by EventLoop when num_pool_threads > 0.
+class ThreadPool
+{
+public:
+    ThreadPool(EventLoop& loop, int num_threads);
+
+    //! Dispatch fn to a pool WorkerThread (round-robin). Returns a promise
+    //! fulfilled on the event-loop thread when fn returns.
+    template<typename T, typename Fn>
+    kj::Promise<T> post(Fn&& fn);
+
+private:
+    std::vector<std::unique_ptr<WorkerThread>> m_threads;
+    size_t m_next_thread{0};
+};
+
+template<typename T, typename Fn>
+kj::Promise<T> ThreadPool::post(Fn&& fn)
+{
+    WorkerThread& worker = *m_threads[m_next_thread % m_threads.size()];
+    ++m_next_thread;
+    return worker.post<T>(std::forward<Fn>(fn));
+}
+
 //! Handler for kj::TaskSet failed task events.
 class LoggingErrorHandler : public kj::TaskSet::ErrorHandler
 {
@@ -281,11 +306,16 @@ class EventLoop
 {
 public:
     //! Construct event loop object with default logging options.
-    EventLoop(const char* exe_name, LogFn log_fn, void* context = nullptr)
-        : EventLoop(exe_name, LogOptions{std::move(log_fn)}, context){}
+    EventLoop(const char* exe_name, LogFn log_fn, void* context = nullptr,
+              int num_pool_threads = 0)
+        : EventLoop(exe_name, LogOptions{std::move(log_fn)}, context, num_pool_threads){}
 
     //! Construct event loop object with specified logging options.
-    EventLoop(const char* exe_name, LogOptions log_opts, void* context = nullptr);
+    //! If num_pool_threads > 0, a ThreadPool with that many WorkerThreads is
+    //! created and requests arriving with no dedicated thread in the Context
+    //! will be dispatched to it (see PassField in type-context.h).
+    EventLoop(const char* exe_name, LogOptions log_opts, void* context = nullptr,
+              int num_pool_threads = 0);
 
     //! Backwards-compatible constructor for previous (deprecated) logging callback signature
     EventLoop(const char* exe_name, std::function<void(bool, std::string)> old_callback, void* context = nullptr)
@@ -373,6 +403,11 @@ public:
 
     //! Capnp list of pending promises.
     std::unique_ptr<kj::TaskSet> m_task_set;
+
+    //! Optional thread pool. Declared after m_task_set so it is destroyed
+    //! first (reverse declaration order): WorkerThread destructors join their
+    //! threads before m_task_set is gone.
+    std::unique_ptr<ThreadPool> m_thread_pool;
 
     //! List of connections.
     std::list<Connection> m_incoming_connections;

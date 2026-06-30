@@ -36,6 +36,7 @@
 #include <tuple>
 #include <unistd.h>
 #include <utility>
+#include <vector>
 
 namespace mp {
 
@@ -197,7 +198,17 @@ void EventLoop::addAsyncCleanup(std::function<void()> fn)
     startAsyncThread();
 }
 
-EventLoop::EventLoop(const char* exe_name, LogOptions log_opts, void* context)
+ThreadPool::ThreadPool(EventLoop& loop, int num_threads)
+{
+    m_threads.reserve(num_threads);
+    for (int i = 0; i < num_threads; ++i) {
+        m_threads.push_back(std::make_unique<WorkerThread>(
+            loop, ThreadName(loop.m_exe_name) + " (pool " + std::to_string(i) + ")"));
+    }
+}
+
+EventLoop::EventLoop(const char* exe_name, LogOptions log_opts, void* context,
+                     int num_pool_threads)
     : m_exe_name(exe_name),
       m_io_context(kj::setupAsyncIo()),
       m_task_set(new kj::TaskSet(m_error_handler)),
@@ -208,6 +219,8 @@ EventLoop::EventLoop(const char* exe_name, LogOptions log_opts, void* context)
     KJ_SYSCALL(socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
     m_wait_fd = fds[0];
     m_post_fd = fds[1];
+    if (num_pool_threads > 0)
+        m_thread_pool = std::make_unique<ThreadPool>(*this, num_pool_threads);
 }
 
 EventLoop::~EventLoop()
