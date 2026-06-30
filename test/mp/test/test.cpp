@@ -83,13 +83,13 @@ public:
     //! not start until the other members are initialized.
     std::thread thread;
 
-    TestSetup(bool client_owns_connection = true)
-        : thread{[&] {
+    TestSetup(bool client_owns_connection = true, int num_pool_threads = 0)
+        : thread{[&, num_pool_threads] {
               EventLoop loop("mptest", [](mp::LogMessage log) {
                   // Info logs are not printed by default, but will be shown with `mptest --verbose`
                   KJ_LOG(INFO, log.level, log.message);
                   if (log.level == mp::Log::Raise) throw std::runtime_error(log.message);
-              });
+              }, nullptr, num_pool_threads);
               auto pipe = loop.m_io_context.provider->newTwoWayPipe();
 
               auto server_connection =

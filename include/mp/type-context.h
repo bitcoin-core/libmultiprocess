@@ -200,6 +200,21 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
     // asynchronously with getLocalServer().
     const auto& params = server_context.call_context.getParams();
     Context::Reader context_arg = Accessor::get(params);
+
+    // If context has no thread set, fall back to the event loop's thread pool
+    // (if configured). Pool threads are not Cap'n Proto capabilities, so the
+    // client never holds a Thread::Client reference to them.
+    if (!context_arg.hasThread()) {
+        if (loop.m_thread_pool) {
+            MP_LOG(loop, Log::Debug) << "IPC server post request  #" << req << " {pool}";
+            return server.m_context.connection->m_canceler.wrap(
+                loop.m_thread_pool->post<typename ServerContext::CallContext>(std::move(invoke)));
+        }
+        MP_LOG(loop, Log::Error)
+            << "IPC server error request #" << req << ", no thread in context and no thread pool configured";
+        throw std::runtime_error("no thread in context and no thread pool configured");
+    }
+
     auto thread_client = context_arg.getThread();
     auto result = server.m_context.connection->m_threads.getLocalServer(thread_client)
         .then([&loop, invoke = kj::mv(invoke), req](const kj::Maybe<Thread::Server&>& perhaps) mutable {
