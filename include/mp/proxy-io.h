@@ -91,12 +91,58 @@ struct ProxyClient<Thread> : public ProxyClientBase<Thread, ::capnp::Void>
     std::optional<CleanupIt> m_disconnect_cb;
 };
 
+//! Worker thread used to execute IPC requests. Owns an OS thread and its
+//! associated ThreadContext (waiter, name, callback maps). Used directly by
+//! ThreadPool for pool threads, and wrapped by ProxyServer<Thread> for
+//! per-client dedicated threads.
+struct WorkerThread {
+    //! Create a new OS thread with the given name.
+    WorkerThread(EventLoop& loop, std::string name);
+    //! Wrap an existing thread (e.g. the current thread) as a WorkerThread.
+    //! No OS thread is created; m_thread is left non-joinable.
+    WorkerThread(EventLoop& loop, ThreadContext& existing);
+    ~WorkerThread();
+    WorkerThread(const WorkerThread&) = delete;
+    WorkerThread& operator=(const WorkerThread&) = delete;
+
+    //! Post fn to the worker thread. When the thread starts executing fn,
+    //! the returned promise is chained so subsequent post() calls can proceed
+    //! immediately without blocking on fn's completion. on_done (if set) is
+    //! called from the event-loop thread after fn returns and results are
+    //! dispatched; callers use this to perform cleanup that must run on the
+    //! event-loop thread (e.g. releasing a capability self-reference).
+    //! OnDone may be std::nullptr_t (no cleanup) or any callable with
+    //! signature void(). The callable is invoked on the event-loop thread
+    //! after results are dispatched. Using a template avoids requiring
+    //! copy-constructibility (e.g. when capturing move-only kj::Own values).
+    template<typename T, typename Fn, typename OnDone = std::nullptr_t>
+    kj::Promise<T> post(Fn&& fn, OnDone on_done = nullptr);
+
+    //! Reference to the event loop. Safe as a plain reference because
+    //! WorkerThread's lifetime is always bounded by its owner: when owned by
+    //! ProxyServer<Thread> the owner holds an EventLoopRef keeping the loop
+    //! alive; when owned by ThreadPool the loop owns the pool.
+    EventLoop& m_loop;
+    //! Pointer to the OS thread's thread-local ThreadContext. For new-thread
+    //! mode this is obtained synchronously after the thread starts; for
+    //! existing-thread mode this points to the caller-supplied context.
+    ThreadContext* m_thread_context;
+    std::thread m_thread;
+    //! Promise signaled when m_thread_context.waiter is ready and there is no
+    //! post() callback function waiting to execute.
+    kj::Promise<void> m_thread_ready{kj::READY_NOW};
+};
+
 template <>
 struct ProxyServer<Thread> final : public Thread::Server
 {
 public:
-    ProxyServer(Connection& connection, ThreadContext& thread_context, std::thread&& thread);
-    ~ProxyServer();
+    //! Construct a ProxyServer wrapping a newly spawned WorkerThread named name.
+    ProxyServer(Connection& connection, std::string name);
+    //! Construct a ProxyServer wrapping an existing thread (e.g. the calling
+    //! thread) so it can be used as a Cap'n Proto callback target.
+    ProxyServer(Connection& connection, ThreadContext& existing);
+    ~ProxyServer() = default;
     kj::Promise<void> getName(GetNameContext context) override;
 
     //! Run a callback function fn returning T on this thread. The function will
@@ -107,11 +153,7 @@ public:
     kj::Promise<T> post(Fn&& fn);
 
     EventLoopRef m_loop;
-    ThreadContext& m_thread_context;
-    std::thread m_thread;
-    //! Promise signaled when m_thread_context.waiter is ready and there is no
-    //! post() callback function waiting to execute.
-    kj::Promise<void> m_thread_ready{kj::READY_NOW};
+    WorkerThread m_worker;
 };
 
 //! Handler for kj::TaskSet failed task events.
@@ -740,36 +782,30 @@ struct ThreadContext
     bool loop_thread = false;
 };
 
-template<typename T, typename Fn>
-kj::Promise<T> ProxyServer<Thread>::post(Fn&& fn)
+template<typename T, typename Fn, typename OnDone>
+kj::Promise<T> WorkerThread::post(Fn&& fn, OnDone on_done)
 {
     auto ready = kj::newPromiseAndFulfiller<void>(); // Signaled when waiter is ready to post again.
     auto cancel_monitor_ptr = kj::heap<CancelMonitor>();
     CancelMonitor& cancel_monitor = *cancel_monitor_ptr;
-    // Keep a reference to the ProxyServer<Thread> instance by assigning it to
-    // the self variable. ProxyServer instances are reference-counted and if the
-    // client drops its reference, this variable keeps the instance alive until
-    // the thread finishes executing. The self variable needs to be destroyed on
-    // the event loop thread so it is freed in a sync() call below.
-    auto self = thisCap();
-    auto ret = m_thread_ready.then([this, self = std::move(self), fn = std::forward<Fn>(fn), ready_fulfiller = kj::mv(ready.fulfiller), cancel_monitor_ptr = kj::mv(cancel_monitor_ptr)]() mutable {
+    auto ret = m_thread_ready.then([this, fn = std::forward<Fn>(fn), ready_fulfiller = kj::mv(ready.fulfiller), cancel_monitor_ptr = kj::mv(cancel_monitor_ptr), on_done = std::move(on_done)]() mutable {
         auto result = kj::newPromiseAndFulfiller<T>(); // Signaled when fn() is called, with its return value.
-        bool posted = m_thread_context.waiter->post([this, self = std::move(self), fn = std::forward<Fn>(fn), ready_fulfiller = kj::mv(ready_fulfiller), result_fulfiller = kj::mv(result.fulfiller), cancel_monitor_ptr = kj::mv(cancel_monitor_ptr)]() mutable {
+        bool posted = m_thread_context->waiter->post([this, fn = std::move(fn), ready_fulfiller = kj::mv(ready_fulfiller), result_fulfiller = kj::mv(result.fulfiller), cancel_monitor_ptr = kj::mv(cancel_monitor_ptr), on_done = std::move(on_done)]() mutable {
             // Fulfill ready.promise now, as soon as the Waiter starts executing
-            // this lambda, so the next ProxyServer<Thread>::post() call can
-            // immediately call waiter->post(). It is important to do this
-            // before calling fn() because fn() can make an IPC call back to the
-            // client, which can make another IPC call to this server thread.
-            // (This typically happens when IPC methods take std::function
-            // parameters.) When this happens the second call to the server
-            // thread should not be blocked waiting for the first call.
-            m_loop->sync([ready_fulfiller = kj::mv(ready_fulfiller)]() mutable {
+            // this lambda, so the next post() call can immediately call
+            // waiter->post(). It is important to do this before calling fn()
+            // because fn() can make an IPC call back to the client, which can
+            // make another IPC call to this server thread. (This typically
+            // happens when IPC methods take std::function parameters.) When
+            // this happens the second call to the server thread should not be
+            // blocked waiting for the first call.
+            m_loop.sync([ready_fulfiller = kj::mv(ready_fulfiller)]() mutable {
                 ready_fulfiller->fulfill();
                 ready_fulfiller = nullptr;
             });
             std::optional<T> result_value;
             kj::Maybe<kj::Exception> exception{kj::runCatchingExceptions([&]{ result_value.emplace(fn(*cancel_monitor_ptr)); })};
-            m_loop->sync([this, &result_value, &exception, self = kj::mv(self), result_fulfiller = kj::mv(result_fulfiller), cancel_monitor_ptr = kj::mv(cancel_monitor_ptr)]() mutable {
+            m_loop.sync([&result_value, &exception, result_fulfiller = kj::mv(result_fulfiller), cancel_monitor_ptr = kj::mv(cancel_monitor_ptr), on_done = std::move(on_done)]() mutable {
                 // Destroy CancelMonitor here before fulfilling or rejecting the
                 // promise so it doesn't get triggered when the promise is
                 // destroyed.
@@ -786,11 +822,13 @@ kj::Promise<T> ProxyServer<Thread>::post(Fn&& fn)
                     result_value.reset();
                 }
                 result_fulfiller = nullptr;
-                // Use evalLater to destroy the ProxyServer<Thread> self
-                // reference, if it is the last reference, because the
-                // ProxyServer<Thread> destructor needs to join the thread,
-                // which can't happen until this sync() block has exited.
-                m_loop->m_task_set->add(kj::evalLater([self = kj::mv(self)] {}));
+                // Call optional cleanup hook (e.g. ProxyServer<Thread> uses
+                // this to schedule deferred self-destruction via evalLater).
+                if constexpr (!std::is_same_v<std::decay_t<OnDone>, std::nullptr_t>) {
+                    on_done();
+                } else {
+                    (void)on_done;
+                }
             });
         });
         // Assert that calling Waiter::post did not fail. It could only return
@@ -802,6 +840,24 @@ kj::Promise<T> ProxyServer<Thread>::post(Fn&& fn)
     }).attach(kj::heap<CancelProbe>(cancel_monitor));
     m_thread_ready = kj::mv(ready.promise);
     return ret;
+}
+
+template<typename T, typename Fn>
+kj::Promise<T> ProxyServer<Thread>::post(Fn&& fn)
+{
+    // Keep a reference to the ProxyServer<Thread> instance by assigning it to
+    // the self variable. ProxyServer instances are reference-counted and if the
+    // client drops its reference, this variable keeps the instance alive until
+    // the thread finishes executing. The self variable needs to be destroyed on
+    // the event loop thread so it is freed in a sync() call below.
+    auto self = thisCap();
+    return m_worker.post<T>(std::forward<Fn>(fn), [this, self = kj::mv(self)]() mutable {
+        // Use evalLater to destroy the ProxyServer<Thread> self reference, if
+        // it is the last reference, because the ProxyServer<Thread> destructor
+        // needs to join the thread, which can't happen until this sync() block
+        // has exited.
+        m_loop->m_task_set->add(kj::evalLater([self = kj::mv(self)] {}));
+    });
 }
 
 //! Given stream file descriptor, make a new ProxyClient object to send requests

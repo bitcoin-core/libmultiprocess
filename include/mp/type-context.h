@@ -28,7 +28,7 @@ void CustomBuildField(TypeList<>,
     // future calls over this connection can reuse it.
     auto [callback_thread, _]{SetThread(
         GuardedRef{thread_context.waiter->m_mutex, thread_context.callback_threads}, &connection,
-        [&] { return connection.m_threads.add(kj::heap<ProxyServer<Thread>>(connection, thread_context, std::thread{})); })};
+        [&] { return connection.m_threads.add(kj::heap<ProxyServer<Thread>>(connection, thread_context)); })};
 
     // Call remote ThreadMap.makeThread function so server will create a
     // dedicated worker thread to run function calls from this thread. Store the
@@ -209,7 +209,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
             KJ_IF_MAYBE (thread_server, perhaps) {
                 auto& thread = static_cast<ProxyServer<Thread>&>(*thread_server);
                 MP_LOG(loop, Log::Debug)
-                    << "IPC server post request  #" << req << " {" << thread.m_thread_context.thread_name << "}";
+                    << "IPC server post request  #" << req << " {" << thread.m_worker.m_thread_context->thread_name << "}";
                 return thread.template post<typename ServerContext::CallContext>(std::move(invoke));
             } else {
                 MP_LOG(loop, Log::Error)
