@@ -36,6 +36,7 @@
 #include <tuple>
 #include <unistd.h>
 #include <utility>
+#include <vector>
 
 namespace mp {
 
@@ -197,7 +198,17 @@ void EventLoop::addAsyncCleanup(std::function<void()> fn)
     startAsyncThread();
 }
 
-EventLoop::EventLoop(const char* exe_name, LogOptions log_opts, void* context)
+ThreadPool::ThreadPool(EventLoop& loop, int num_threads)
+{
+    m_threads.reserve(num_threads);
+    for (int i = 0; i < num_threads; ++i) {
+        m_threads.push_back(std::make_unique<WorkerThread>(
+            loop, ThreadName(loop.m_exe_name) + " (pool " + std::to_string(i) + ")"));
+    }
+}
+
+EventLoop::EventLoop(const char* exe_name, LogOptions log_opts, void* context,
+                     int num_pool_threads)
     : m_exe_name(exe_name),
       m_io_context(kj::setupAsyncIo()),
       m_task_set(new kj::TaskSet(m_error_handler)),
@@ -208,6 +219,8 @@ EventLoop::EventLoop(const char* exe_name, LogOptions log_opts, void* context)
     KJ_SYSCALL(socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
     m_wait_fd = fds[0];
     m_post_fd = fds[1];
+    if (num_pool_threads > 0)
+        m_thread_pool = std::make_unique<ThreadPool>(*this, num_pool_threads);
 }
 
 EventLoop::~EventLoop()
@@ -372,13 +385,28 @@ ProxyClient<Thread>::~ProxyClient()
     }
 }
 
-ProxyServer<Thread>::ProxyServer(Connection& connection, ThreadContext& thread_context, std::thread&& thread)
-    : m_loop{*connection.m_loop}, m_thread_context(thread_context), m_thread(std::move(thread))
+WorkerThread::WorkerThread(EventLoop& loop, std::string name) : m_loop(loop)
 {
-    assert(m_thread_context.waiter.get() != nullptr);
+    std::promise<ThreadContext*> ctx_promise;
+    m_thread = std::thread([&loop, &ctx_promise, name = std::move(name)]() mutable {
+        g_thread_context.thread_name = std::move(name);
+        g_thread_context.waiter = std::make_unique<Waiter>();
+        Lock lock(g_thread_context.waiter->m_mutex);
+        ctx_promise.set_value(&g_thread_context);
+        if (loop.testing_hook_makethread_created) loop.testing_hook_makethread_created();
+        // Wait for shutdown signal: waiter being set to null in ~WorkerThread.
+        g_thread_context.waiter->wait(lock, [] { return !g_thread_context.waiter; });
+    });
+    m_thread_context = ctx_promise.get_future().get();
 }
 
-ProxyServer<Thread>::~ProxyServer()
+WorkerThread::WorkerThread(EventLoop& loop, ThreadContext& existing)
+    : m_loop(loop), m_thread_context(&existing)
+{
+    assert(m_thread_context->waiter.get() != nullptr);
+}
+
+WorkerThread::~WorkerThread()
 {
     if (!m_thread.joinable()) return;
     // Stop async thread and wait for it to exit. Need to wait because the
@@ -386,30 +414,40 @@ ProxyServer<Thread>::~ProxyServer()
     // without an active exception" error. An alternative to waiting would be
     // detach the thread, but this would introduce nondeterminism which could
     // make code harder to debug or extend.
-    assert(m_thread_context.waiter.get());
+    assert(m_thread_context->waiter.get());
     std::unique_ptr<Waiter> waiter;
     {
-        const Lock lock(m_thread_context.waiter->m_mutex);
-        //! Reset thread context waiter pointer, as shutdown signal for done
-        //! lambda passed as waiter->wait() argument in makeThread code below.
-        waiter = std::move(m_thread_context.waiter);
-        //! Assert waiter is idle. This destructor shouldn't be getting called if it is busy.
+        const Lock lock(m_thread_context->waiter->m_mutex);
+        // Reset thread context waiter pointer, as shutdown signal for the done
+        // lambda passed as waiter->wait() argument in WorkerThread constructor.
+        waiter = std::move(m_thread_context->waiter);
+        // Assert waiter is idle. The destructor shouldn't be called if busy.
         assert(!waiter->m_fn);
-        // Clear client maps now to avoid deadlock in m_thread.join() call
-        // below. The maps contain Thread::Client objects that need to be
-        // destroyed from the event loop thread (this thread), which can't
-        // happen if this thread is busy calling join.
-        m_thread_context.request_threads.clear();
-        m_thread_context.callback_threads.clear();
-        //! Ping waiter.
+        // Clear client maps now to avoid deadlock in m_thread.join() below.
+        // The maps contain Thread::Client objects that need to be destroyed
+        // from the event loop thread (this thread), which can't happen if this
+        // thread is busy calling join.
+        m_thread_context->request_threads.clear();
+        m_thread_context->callback_threads.clear();
+        // Ping waiter so it wakes and checks the null waiter shutdown signal.
         waiter->m_cv.notify_all();
     }
     m_thread.join();
 }
 
+ProxyServer<Thread>::ProxyServer(Connection& connection, std::string name)
+    : m_loop{*connection.m_loop}, m_worker(*connection.m_loop, std::move(name))
+{
+}
+
+ProxyServer<Thread>::ProxyServer(Connection& connection, ThreadContext& existing)
+    : m_loop{*connection.m_loop}, m_worker(*connection.m_loop, existing)
+{
+}
+
 kj::Promise<void> ProxyServer<Thread>::getName(GetNameContext context)
 {
-    context.getResults().setResult(m_thread_context.thread_name);
+    context.getResults().setResult(m_worker.m_thread_context->thread_name);
     return kj::READY_NOW;
 }
 
@@ -420,18 +458,8 @@ kj::Promise<void> ProxyServer<ThreadMap>::makeThread(MakeThreadContext context)
     EventLoop& loop{*m_connection.m_loop};
     if (loop.testing_hook_makethread) loop.testing_hook_makethread();
     const std::string from = context.getParams().getName();
-    std::promise<ThreadContext*> thread_context;
-    std::thread thread([&loop, &thread_context, from]() {
-        g_thread_context.thread_name = ThreadName(loop.m_exe_name) + " (from " + from + ")";
-        g_thread_context.waiter = std::make_unique<Waiter>();
-        Lock lock(g_thread_context.waiter->m_mutex);
-        thread_context.set_value(&g_thread_context);
-        if (loop.testing_hook_makethread_created) loop.testing_hook_makethread_created();
-        // Wait for shutdown signal from ProxyServer<Thread> destructor (signal
-        // is just waiter getting set to null.)
-        g_thread_context.waiter->wait(lock, [] { return !g_thread_context.waiter; });
-    });
-    auto thread_server = kj::heap<ProxyServer<Thread>>(m_connection, *thread_context.get_future().get(), std::move(thread));
+    auto thread_server = kj::heap<ProxyServer<Thread>>(
+        m_connection, ThreadName(loop.m_exe_name) + " (from " + from + ")");
     auto thread_client = m_connection.m_threads.add(kj::mv(thread_server));
     context.getResults().setResult(kj::mv(thread_client));
     return kj::READY_NOW;

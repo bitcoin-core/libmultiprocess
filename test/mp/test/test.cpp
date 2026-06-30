@@ -38,6 +38,15 @@
 #include <utility>
 #include <vector>
 
+//! Assert that a call throws std::runtime_error with the given message.
+#define EXPECT_EXCEPTION(call, message)                                           \
+    try {                                                                         \
+        call;                                                                     \
+        KJ_EXPECT(false);                                                         \
+    } catch (const std::runtime_error& e) {                                       \
+        KJ_EXPECT(std::string_view{e.what()} == message);                         \
+    }
+
 namespace mp {
 namespace test {
 
@@ -74,13 +83,13 @@ public:
     //! not start until the other members are initialized.
     std::thread thread;
 
-    TestSetup(bool client_owns_connection = true)
-        : thread{[&] {
+    TestSetup(bool client_owns_connection = true, int num_pool_threads = 0)
+        : thread{[&, num_pool_threads] {
               EventLoop loop("mptest", [](mp::LogMessage log) {
                   // Info logs are not printed by default, but will be shown with `mptest --verbose`
                   KJ_LOG(INFO, log.level, log.message);
                   if (log.level == mp::Log::Raise) throw std::runtime_error(log.message);
-              });
+              }, nullptr, num_pool_threads);
               auto pipe = loop.m_io_context.provider->newTwoWayPipe();
 
               auto server_connection =
@@ -127,6 +136,20 @@ public:
         thread.join();
     }
 };
+
+//! Run a test body twice: once with on-demand threads (initThreadMap), once with a thread pool.
+#define RUN_WITH_ASYNC_VARIANTS(client_owns_connection, ...)                \
+    {                                                                             \
+        TestSetup setup{client_owns_connection};                                 \
+        ProxyClient<messages::FooInterface>* foo = setup.client.get();           \
+        foo->initThreadMap();                                                     \
+        __VA_ARGS__                                                               \
+    }                                                                             \
+    {                                                                             \
+        TestSetup setup{client_owns_connection, 1};                              \
+        ProxyClient<messages::FooInterface>* foo = setup.client.get();           \
+        __VA_ARGS__                                                               \
+    }
 
 KJ_TEST("Call FooInterface methods")
 {
@@ -251,14 +274,7 @@ KJ_TEST("Call IPC method after client connection is closed")
     KJ_EXPECT(foo->add(1, 2) == 3);
     setup.client_disconnect();
 
-    bool disconnected{false};
-    try {
-        foo->add(1, 2);
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method called after disconnect.");
-        disconnected = true;
-    }
-    KJ_EXPECT(disconnected);
+    EXPECT_EXCEPTION(foo->add(1, 2), "IPC client method called after disconnect.");
 }
 
 KJ_TEST("Calling IPC method after server connection is closed")
@@ -268,14 +284,7 @@ KJ_TEST("Calling IPC method after server connection is closed")
     KJ_EXPECT(foo->add(1, 2) == 3);
     setup.server_disconnect();
 
-    bool disconnected{false};
-    try {
-        foo->add(1, 2);
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-        disconnected = true;
-    }
-    KJ_EXPECT(disconnected);
+    EXPECT_EXCEPTION(foo->add(1, 2), "IPC client method call interrupted by disconnect.");
 }
 
 KJ_TEST("Calling IPC method and disconnecting during the call")
@@ -288,14 +297,7 @@ KJ_TEST("Calling IPC method and disconnecting during the call")
     // handling the callFn call to make sure this case is handled cleanly.
     setup.server->m_impl->m_fn = setup.client_disconnect;
 
-    bool disconnected{false};
-    try {
-        foo->callFn();
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-        disconnected = true;
-    }
-    KJ_EXPECT(disconnected);
+    EXPECT_EXCEPTION(foo->callFn(), "IPC client method call interrupted by disconnect.");
 }
 
 KJ_TEST("Calling IPC method, disconnecting and blocking during the call")
@@ -317,34 +319,45 @@ KJ_TEST("Calling IPC method, disconnecting and blocking during the call")
     // the ~Connection destructor usually would immediately free all remaining
     // ProxyServer objects associated with the connection. Having an in-progress
     // RPC call requires keeping the ProxyServer longer.
+    {
+        std::promise<void> signal;
+        TestSetup setup{/*client_owns_connection=*/false};
+        ProxyClient<messages::FooInterface>* foo = setup.client.get();
+        foo->initThreadMap();
+        KJ_EXPECT(foo->add(1, 2) == 3);
 
-    std::promise<void> signal;
-    TestSetup setup{/*client_owns_connection=*/false};
-    ProxyClient<messages::FooInterface>* foo = setup.client.get();
-    KJ_EXPECT(foo->add(1, 2) == 3);
+        setup.server->m_impl->m_fn = [&] {
+            EventLoopRef loop{*setup.server->m_context.loop};
+            setup.client_disconnect();
+            signal.get_future().get();
+        };
 
-    foo->initThreadMap();
-    setup.server->m_impl->m_fn = [&] {
-        EventLoopRef loop{*setup.server->m_context.loop};
-        setup.client_disconnect();
-        signal.get_future().get();
-    };
+        EXPECT_EXCEPTION(foo->callFnAsync(), "IPC client method call interrupted by disconnect.");
 
-    bool disconnected{false};
-    try {
-        foo->callFnAsync();
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-        disconnected = true;
+        // Now that the disconnect has been detected, set signal allowing the
+        // callFnAsync() IPC call to return. Since signalling may not wake up the
+        // thread right away, it is important for the signal variable to be declared
+        // *before* the TestSetup variable so is not destroyed while
+        // signal.get_future().get() is called.
+        signal.set_value();
     }
-    KJ_EXPECT(disconnected);
+    // Test with ThreadPool
+    {
+        std::promise<void> signal;
+        TestSetup setup{false, 1};
+        ProxyClient<messages::FooInterface>* foo = setup.client.get();
+        KJ_EXPECT(foo->add(1, 2) == 3);
 
-    // Now that the disconnect has been detected, set signal allowing the
-    // callFnAsync() IPC call to return. Since signalling may not wake up the
-    // thread right away, it is important for the signal variable to be declared
-    // *before* the TestSetup variable so is not destroyed while
-    // signal.get_future().get() is called.
-    signal.set_value();
+        setup.server->m_impl->m_fn = [&] {
+            EventLoopRef loop{*setup.server->m_context.loop};
+            setup.client_disconnect();
+            signal.get_future().get();
+        };
+
+        EXPECT_EXCEPTION(foo->callFnAsync(), "IPC client method call interrupted by disconnect.");
+
+        signal.set_value();
+    }
 }
 
 KJ_TEST("Worker thread destroyed before it is initialized")
@@ -374,14 +387,7 @@ KJ_TEST("Worker thread destroyed before it is initialized")
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     };
 
-    bool disconnected{false};
-    try {
-        foo->callFnAsync();
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-        disconnected = true;
-    }
-    KJ_EXPECT(disconnected);
+    EXPECT_EXCEPTION(foo->callFnAsync(), "IPC client method call interrupted by disconnect.");
 }
 
 KJ_TEST("Calling async IPC method, with server disconnect racing the call")
@@ -393,25 +399,19 @@ KJ_TEST("Calling async IPC method, with server disconnect racing the call")
     // worker thread as soon as it begins to execute an async request. Without
     // the bugfix, the worker thread would trigger a SIGSEGV after this by
     // calling call_context.getParams().
-    TestSetup setup;
-    ProxyClient<messages::FooInterface>* foo = setup.client.get();
-    foo->initThreadMap();
-    setup.server->m_impl->m_fn = [] {};
+    RUN_WITH_ASYNC_VARIANTS(true,
+        setup.server->m_impl->m_fn = [] {};
 
-    EventLoop& loop = *setup.server->m_context.connection->m_loop;
-    loop.testing_hook_async_request_start = [&] {
-        setup.server_disconnect();
-        // Sleep is necessary to let the event loop fully clean up after the
-        // disconnect and trigger the SIGSEGV.
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    };
+        EventLoop& loop = *setup.server->m_context.connection->m_loop;
+        loop.testing_hook_async_request_start = [&] {
+            setup.server_disconnect();
+            // Sleep is necessary to let the event loop fully clean up after the
+            // disconnect and trigger the SIGSEGV.
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        };
 
-    try {
-        foo->callFnAsync();
-        KJ_EXPECT(false);
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-    }
+        EXPECT_EXCEPTION(foo->callFnAsync(), "IPC client method call interrupted by disconnect.");
+    )
 }
 
 KJ_TEST("Calling async IPC method, with server disconnect after cleanup")
@@ -425,22 +425,16 @@ KJ_TEST("Calling async IPC method, with server disconnect after cleanup")
     // Without the bugfix, the m_on_cancel callback would be called at this
     // point, accessing the cancel_mutex stack variable that had gone out of
     // scope.
-    TestSetup setup;
-    ProxyClient<messages::FooInterface>* foo = setup.client.get();
-    foo->initThreadMap();
-    setup.server->m_impl->m_fn = [] {};
+    RUN_WITH_ASYNC_VARIANTS(true,
+        setup.server->m_impl->m_fn = [] {};
 
-    EventLoop& loop = *setup.server->m_context.connection->m_loop;
-    loop.testing_hook_async_request_done = [&] {
-        setup.server_disconnect();
-    };
+        EventLoop& loop = *setup.server->m_context.connection->m_loop;
+        loop.testing_hook_async_request_done = [&] {
+            setup.server_disconnect();
+        };
 
-    try {
-        foo->callFnAsync();
-        KJ_EXPECT(false);
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-    }
+        EXPECT_EXCEPTION(foo->callFnAsync(), "IPC client method call interrupted by disconnect.");
+    )
 }
 
 KJ_TEST("Destroying ProxyClient<> with destroy method after peer disconnect")
@@ -455,18 +449,16 @@ KJ_TEST("Destroying ProxyClient<> with destroy method after peer disconnect")
     // the now dead connection; without the bugfix the exception escapes the
     // noexcept destructor and aborts the process.
 
-    TestSetup setup{/*client_owns_connection=*/false};
-    ProxyClient<messages::FooInterface>* foo = setup.client.get();
-    foo->initThreadMap();
-
     class Callback : public FooCallback
     {
     public:
         int call(int arg) override { return arg; }
     };
 
-    foo->saveCallback(std::make_shared<Callback>());
-    setup.client_disconnect();
+    RUN_WITH_ASYNC_VARIANTS(false,
+        foo->saveCallback(std::make_shared<Callback>());
+        setup.client_disconnect();
+    )
 }
 
 KJ_TEST("Make simultaneous IPC calls on single remote thread")
@@ -522,6 +514,32 @@ KJ_TEST("Make simultaneous IPC calls on single remote thread")
         tc.waiter->wait(lock, [&running] { return running == 0; });
     }
     KJ_EXPECT(expected == 400);
+}
+
+KJ_TEST("Make IPC call to same remote thread while it is waiting for callback")
+{
+    // `RUN_WITH_ASYNC_VARIANTS` sets up a ThreadPool
+    // with one thread, so the async request from the
+    // callback has to be processed by the same remote
+    // thread
+    RUN_WITH_ASYNC_VARIANTS(true,
+        class Callback : public FooCallback
+        {
+        public:
+            Callback(ProxyClient<messages::FooInterface>* foo, int expect) : m_foo(foo), m_expect(expect) {}
+            int call(int arg) override
+            {
+                KJ_EXPECT(arg == m_expect);
+                return m_foo->passFn([this]{ return m_expect; });
+            }
+
+            ProxyClient<messages::FooInterface>* m_foo;
+            int m_expect;
+        };
+
+        Callback callback(foo, 1);
+        KJ_EXPECT(foo->callback(callback, 1) == 1);
+    )
 }
 
 } // namespace test
