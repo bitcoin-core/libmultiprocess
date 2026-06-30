@@ -548,7 +548,9 @@ public:
 
     // ThreadMap interface client, used to create a remote server thread when an
     // client IPC call is being made for the first time from a new thread.
-    ThreadMap::Client m_thread_map{nullptr};
+    // Empty (unset) when the client has not called initThreadMap(), in which
+    // case the server is expected to dispatch requests via a thread pool.
+    std::optional<ThreadMap::Client> m_thread_map;
 
     //! Collection of server-side IPC worker threads (ProxyServer<Thread> objects previously returned by
     //! ThreadMap.makeThread) used to service requests to clients.

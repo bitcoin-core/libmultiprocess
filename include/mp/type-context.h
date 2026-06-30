@@ -30,27 +30,32 @@ void CustomBuildField(TypeList<>,
         GuardedRef{thread_context.waiter->m_mutex, thread_context.callback_threads}, &connection,
         [&] { return connection.m_threads.add(kj::heap<ProxyServer<Thread>>(connection, thread_context)); })};
 
+    auto context = output.init();
+    context.setCallbackThread(callback_thread->second->m_client);
+
     // Call remote ThreadMap.makeThread function so server will create a
     // dedicated worker thread to run function calls from this thread. Store the
     // Thread::Client reference it returns in the request_threads map.
-    auto make_request_thread{[&]{
-        // This code will only run if an IPC client call is being made for the
-        // first time on this thread. After the first call, subsequent calls
-        // will use the existing request thread. This code will also never run at
-        // all if the current thread is a request thread created for a different
-        // IPC client, because in that case PassField code (below) will have set
-        // request_thread to point to the calling thread.
-        auto request = connection.m_thread_map.makeThreadRequest();
-        request.setName(thread_context.thread_name);
-        return request.send().getResult(); // Nonblocking due to capnp request pipelining.
-    }};
-    auto [request_thread, _1]{SetThread(
-        GuardedRef{thread_context.waiter->m_mutex, thread_context.request_threads},
-        &connection, make_request_thread)};
-
-    auto context = output.init();
-    context.setThread(request_thread->second->m_client);
-    context.setCallbackThread(callback_thread->second->m_client);
+    // Skip this if m_thread_map is not initialized, in which case
+    // the context.thread field is left unset and the server is
+    // expected to dispatch the request via its thread pool.
+    if (connection.m_thread_map) {
+        auto make_request_thread{[&]{
+            // This code will only run if an IPC client call is being made for the
+            // first time on this thread. After the first call, subsequent calls
+            // will use the existing request thread. This code will also never run at
+            // all if the current thread is a request thread created for a different
+            // IPC client, because in that case PassField code (below) will have set
+            // request_thread to point to the calling thread.
+            auto request = connection.m_thread_map->makeThreadRequest();
+            request.setName(thread_context.thread_name);
+            return request.send().getResult(); // Nonblocking due to capnp request pipelining.
+        }};
+        auto [request_thread, _1]{SetThread(
+            GuardedRef{thread_context.waiter->m_mutex, thread_context.request_threads},
+            &connection, make_request_thread)};
+        context.setThread(request_thread->second->m_client);
+    }
 }
 
 //! PassField override for mp.Context arguments. Return asynchronously and call
@@ -232,38 +237,8 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                 throw std::runtime_error("invalid thread handle");
             }
         }, [&loop, req](::kj::Exception&& e) -> kj::Promise<typename ServerContext::CallContext> {
-            // If you see the error "(remote):0: failed: remote exception:
-            // Called null capability" here, it probably means your Init class
-            // is missing a declaration like:
-            //
-            //   construct @0 (threadMap: Proxy.ThreadMap) -> (threadMap :Proxy.ThreadMap);
-            //
-            // which passes a ThreadMap reference from the client to the server,
-            // allowing the server to create threads to run IPC calls on the
-            // client, and also returns a ThreadMap reference from the server to
-            // the client, allowing the client to create threads on the server.
-            // (Typically the latter ThreadMap is used more often because there
-            // are more client-to-server calls.)
-            //
-            // If the other side of the connection did not previously get a
-            // ThreadMap reference from this side of the connection, when the
-            // other side calls `m_thread_map.makeThreadRequest()` in
-            // `BuildField` above, `m_thread_map` will be null, but that call
-            // will not fail immediately due to Cap'n Proto's request pipelining
-            // and delayed execution. Instead that call will return an invalid
-            // Thread reference, and when that reference is passed to this side
-            // of the connection as `thread_client` above, the
-            // `getLocalServer(thread_client)` call there will be the first
-            // thing to overtly fail, leading to an error here.
-            //
-            // Potentially there are also other things that could cause errors
-            // here, but this is the most likely cause.
-            //
-            // The log statement here is not strictly necessary since the same
-            // exception will also be logged in serverInvoke, but this logging
-            // may provide extra context that could be helpful for debugging.
             MP_LOG(loop, Log::Info)
-                << "IPC server error request #" << req << " CapabilityServerSet<Thread>::getLocalServer call failed, did you forget to provide a ThreadMap to the client prior to this IPC call?";
+                << "IPC server error request #" << req << " CapabilityServerSet<Thread>::getLocalServer call failed";
             return kj::mv(e);
         });
     // Use connection m_canceler object to cancel the result promise if the

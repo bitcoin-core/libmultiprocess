@@ -34,7 +34,7 @@ decltype(auto) CustomReadField(TypeList<>,
     Input&& input,
     typename std::enable_if<std::is_same<decltype(input.get()), ThreadMap::Client>::value>::type* enable = nullptr)
 {
-    invoke_context.connection.m_thread_map = input.get();
+    invoke_context.connection.m_thread_map.emplace(input.get());
 }
 } // namespace mp
 
