@@ -41,6 +41,22 @@ struct FooFn; // IWYU pragma: export
 struct FooInterface; // IWYU pragma: export
 } // namespace messages
 
+template <typename T, typename Value, typename Output>
+void CustomBuildField(TypeList<Pinned<T>>, Priority<1>, InvokeContext& invoke_context, Value&& value, Output&& output)
+{
+    BuildField(TypeList<T>(), invoke_context, output, value.value);
+}
+
+template <typename T, typename Input, typename ReadDest>
+decltype(auto) CustomReadField(TypeList<Pinned<T>>, Priority<1>, InvokeContext& invoke_context, Input&& input, ReadDest&& read_dest)
+{
+    // read_dest.construct() is used instead of read_dest.update() because Pinned<T>
+    // has no default constructor, so update()'s default-construct-then-fill path fails.
+    // ReadDestTemp<T> is required here: without a pre-existing T to pass to
+    // ReadDestUpdate, we need ReadField to return a T value directly.
+    return read_dest.construct(ReadField(TypeList<T>(), invoke_context, input, ReadDestTemp<T>()));
+}
+
 template <typename Output>
 void CustomBuildField(TypeList<FooCustom>, Priority<1>, InvokeContext& invoke_context, const FooCustom& value, Output&& output)
 {
