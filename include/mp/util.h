@@ -247,6 +247,15 @@ void Unlock(Lock& lock, Callback&& callback)
     callback();
 }
 
+//! Uninitialized aligned storage for a single T value. Provides a ptr()
+//! accessor to avoid repeated reinterpret_cast/std::launder boilerplate.
+template <typename T>
+struct AlignedStorage {
+    alignas(T) std::byte data[sizeof(T)];
+    T* ptr() { return std::launder(reinterpret_cast<T*>(data)); }
+    const T* ptr() const { return std::launder(reinterpret_cast<const T*>(data)); }
+};
+
 //! Invoke a function and run a follow-up action before returning the original
 //! result.
 //!

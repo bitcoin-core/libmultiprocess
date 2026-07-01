@@ -7,6 +7,7 @@
 
 #include <mp/proxy-io.h>
 
+#include <capnp/serialize.h>
 #include <exception>
 #include <optional>
 #include <set>
@@ -402,18 +403,19 @@ template <typename Derived, size_t N = 0>
 struct IterateFieldsHelper
 {
     template <typename Arg1, typename Arg2, typename ParamList, typename NextFn, typename... NextFnArgs>
-    void handleChain(Arg1& arg1, Arg2& arg2, ParamList, NextFn&& next_fn, NextFnArgs&&... next_fn_args)
+    decltype(auto) handleChain(Arg1& arg1, Arg2& arg2, ParamList, NextFn&& next_fn, NextFnArgs&&... next_fn_args)
     {
         using S = Split<N, ParamList>;
         handleChain(arg1, arg2, typename S::First());
-        next_fn.handleChain(arg1, arg2, typename S::Second(),
+        return next_fn.handleChain(arg1, arg2, typename S::Second(),
             std::forward<NextFnArgs>(next_fn_args)...);
     }
 
     template <typename Arg1, typename Arg2, typename ParamList>
-    void handleChain(Arg1& arg1, Arg2& arg2, ParamList)
+    decltype(auto) handleChain(Arg1& arg1, Arg2& arg2, ParamList)
     {
-        static_cast<Derived*>(this)->handleField(arg1, arg2, ParamList());
+        using S = Split<N, ParamList>;
+        return static_cast<Derived*>(this)->handleField(arg1, arg2, typename S::First());
     }
 private:
     IterateFieldsHelper() = default;
@@ -679,17 +681,22 @@ void serverDestroy(Server& server)
     MP_LOG(*server.m_context.loop, Log::Debug) << "IPC server destroy " << CxxTypeName(server);
 }
 
-//! Entry point called by generated client code that looks like:
+//! Entry point called by generated client code. ReturnType and ReturnAccessor
+//! both default to void for void methods. For non-void methods the code
+//! generator supplies them as explicit template arguments:
 //!
-//! ProxyClient<ClassName>::M0::Result ProxyClient<ClassName>::methodName(M0::Param<0> arg0, M0::Param<1> arg1) {
-//!     typename M0::Result result;
-//!     clientInvoke(*this, &InterfaceName::Client::methodNameRequest, MakeClientParam<...>(M0::Fwd<0>(arg0)), MakeClientParam<...>(M0::Fwd<1>(arg1)), MakeClientParam<...>(result));
-//!     return result;
-//! }
+//! Void return:
+//!   clientInvoke(*this, &InterfaceName::Client::methodRequest,
+//!       MakeClientParam<...>(M0::Fwd<0>(arg0)), ...);
 //!
-//! Ellipses above are where generated Accessor<> type declarations are inserted.
-template <typename ProxyClient, typename GetRequest, typename... FieldObjs>
-void clientInvoke(ProxyClient& proxy_client, const GetRequest& get_request, FieldObjs&&... fields)
+//! Non-void return:
+//!   return clientInvoke<typename M0::Result, RetAccessor>(
+//!       *this, &InterfaceName::Client::methodRequest,
+//!       MakeClientParam<...>(M0::Fwd<0>(arg0)), ...);
+//!
+//! Ellipses are where Accessor<> type declarations are inserted by the code generator.
+template <typename ReturnType = void, typename ReturnAccessor = void, typename ProxyClient, typename GetRequest, typename... FieldObjs>
+ReturnType clientInvoke(ProxyClient& proxy_client, const GetRequest& get_request, FieldObjs&&... fields)
 {
     if (!CurrentThread().waiter) {
         assert(CurrentThread().thread_name.empty());
@@ -714,6 +721,25 @@ void clientInvoke(ProxyClient& proxy_client, const GetRequest& get_request, Fiel
     std::string kj_exception;
     bool done = false;
     const char* disconnected = nullptr;
+
+    // Storage for the return value when it is move-constructible;
+    // std::true_type is a trivial placeholder for the void and non-movable
+    // cases (where response_copy is used instead). AlignedStorage is used
+    // instead of std::optional so that placement new can construct the value
+    // directly from a ReadField return value via C++17 guaranteed copy elision.
+    // optional::emplace would not work because it would treat the ReadField
+    // return value as an rvalue to be moved from instead of a copy required to
+    // be elided.
+    using ResultStorageT = std::conditional_t<
+        !std::is_void_v<ReturnType> && std::is_move_constructible_v<ReturnType>,
+        ReturnType, std::true_type>;
+    AlignedStorage<ResultStorageT> result_storage;
+    bool result_constructed{false};
+    // capnp Results type for the non-movable return path.
+    using InvokeResults [[maybe_unused]] = typename CapRequestTraits<
+        typename FunctionTraits<std::decay_t<GetRequest>>::Result>::Results;
+    kj::Array<capnp::word> response_copy;
+
     proxy_client.m_context.loop->sync([&]() {
         if (!proxy_client.m_context.connection) {
             const Lock lock(thread_context.waiter->m_mutex);
@@ -744,6 +770,30 @@ void clientInvoke(ProxyClient& proxy_client, const GetRequest& get_request, Fiel
                 try {
                     IterateFields().handleChain(
                         *invoke_context, response, FieldList(), typename FieldObjs::ReadResults{&fields}...);
+                    if constexpr (!std::is_void_v<ReturnType>) {
+                        if constexpr (std::is_move_constructible_v<ReturnType>) {
+                            new (result_storage.ptr()) ReturnType(ReadField(TypeList<ReturnType>(), *invoke_context,
+                                Make<StructField, ReturnAccessor>(response),
+                                ReadDestTemp<ReturnType>()));
+                            result_constructed = true;
+                        } else {
+                            // Non-movable return type: the value cannot be moved
+                            // from the event-loop thread to the client thread, so
+                            // copy the entire capnp response to a flat word buffer
+                            // and deserialize it after wait() on the client thread,
+                            // returning a prvalue with no move constructor needed.
+                            // Copying the whole response is inefficient, but
+                            // non-movable return types are rare and their responses
+                            // should be small. If large responses ever need this
+                            // path, an alternative would be to keep the response
+                            // alive across threads and release it afterward, at the
+                            // cost of more complexity and possible thread-switch
+                            // overhead.
+                            capnp::MallocMessageBuilder builder;
+                            builder.setRoot(static_cast<typename InvokeResults::Reader>(response));
+                            response_copy = capnp::messageToFlatArray(builder);
+                        }
+                    }
                 } catch (...) {
                     exception = std::current_exception();
                 }
@@ -767,9 +817,29 @@ void clientInvoke(ProxyClient& proxy_client, const GetRequest& get_request, Fiel
 
     Lock lock(thread_context.waiter->m_mutex);
     thread_context.waiter->wait(lock, [&done]() { return done; });
-    if (exception) std::rethrow_exception(exception);
+    if (exception) {
+        if constexpr (!std::is_void_v<ReturnType> && std::is_move_constructible_v<ReturnType>) {
+            if (result_constructed) result_storage.ptr()->~ReturnType();
+        }
+        std::rethrow_exception(exception);
+    }
     if (!kj_exception.empty()) MP_LOGPLAIN(*proxy_client.m_context.loop, Log::Raise) << kj_exception;
     if (disconnected) MP_LOGPLAIN(*proxy_client.m_context.loop, Log::Raise) << disconnected;
+    if constexpr (!std::is_void_v<ReturnType>) {
+        if constexpr (std::is_move_constructible_v<ReturnType>) {
+            ReturnType* ptr = result_storage.ptr();
+            struct Guard { ReturnType* p; ~Guard() { p->~ReturnType(); } } guard{ptr};
+            return std::move(*ptr);
+        } else {
+            // Non-movable: deserialize return value from copied response on the client thread.
+            // ReadField returns a prvalue; returning it triggers C++17 guaranteed copy elision.
+            capnp::FlatArrayMessageReader msg(response_copy.asPtr());
+            auto results_reader = msg.getRoot<InvokeResults>();
+            return ReadField(TypeList<ReturnType>(), *invoke_context,
+                Make<StructField, ReturnAccessor>(results_reader),
+                ReadDestTemp<ReturnType>());
+        }
+    }
 }
 
 //! Invoke callable `fn()` that may return void. If it does return void, replace
