@@ -555,6 +555,7 @@ static void Generate(kj::StringPtr src_prefix,
                 std::string client_invoke_return;
                 std::ostringstream server_invoke_start;
                 std::ostringstream server_invoke_end;
+                std::string server_ret_accessor;
                 int argc = 0;
                 for (const auto& field : fields.fields) {
                     if (field.skip) continue;
@@ -591,14 +592,16 @@ static void Generate(kj::StringPtr src_prefix,
                     }
 
                     if (field.exception.size()) {
-                        server_invoke_start << "Make<ServerExcept, " << field.exception;
+                        server_invoke_start << "Make<ServerExcept, " << field.exception
+                                            << ", " << AccessorType(base_name, field) << ">(";
+                        server_invoke_end << ")";
                     } else if (field.retval) {
-                        server_invoke_start << "Make<ServerRet";
+                        server_ret_accessor = AccessorType(base_name, field);
                     } else {
-                        server_invoke_start << "MakeServerField<" << field.args;
+                        server_invoke_start << "MakeServerField<" << field.args
+                                            << ", " << AccessorType(base_name, field) << ">(";
+                        server_invoke_end << ")";
                     }
-                    server_invoke_start << ", " << AccessorType(base_name, field) << ">(";
-                    server_invoke_end << ")";
                 }
 
                 const std::string static_str{is_construct || is_destroy ? "static " : ""};
@@ -630,8 +633,10 @@ static void Generate(kj::StringPtr src_prefix,
                            << server_invoke_start.str();
                 if (is_destroy) {
                     def_server << "ServerDestroy()";
+                } else if (server_ret_accessor.empty()) {
+                    def_server << "ServerCall<void>()";
                 } else {
-                    def_server << "ServerCall()";
+                    def_server << "ServerCall<" << server_ret_accessor << ">()";
                 }
                 def_server << server_invoke_end.str() << ");\n}\n";
                 ++method_ordinal;

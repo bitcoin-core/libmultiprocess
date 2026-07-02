@@ -517,11 +517,16 @@ ClientParam<Accessor, Types...> MakeClientParam(Types&&... values)
     return {std::forward<Types>(values)...};
 }
 
+//! Terminal node in the server-side invoke chain.
+//! ReturnAccessor = void for void methods; for non-void methods it is the
+//! capnp Accessor for the result field. The code generator emits either
+//! ServerCall<void>() [void] or ServerCall<Accessor<Result,...>>() [non-void].
+template <typename ReturnAccessor = void>
 struct ServerCall
 {
     // FIXME: maybe call call_context.releaseParams()
     template <typename ServerContext, typename... Args>
-    decltype(auto) invoke(ServerContext& server_context, TypeList<>, Args&&... args) const
+    void invoke(ServerContext& server_context, TypeList<>, Args&&... args) const
     {
         // If cancel_lock is set, release it while executing the method, and
         // reacquire it afterwards. The lock is needed to prevent params and
@@ -531,13 +536,21 @@ struct ServerCall
         // because the method can take arbitrarily long to return and the event
         // loop will need the lock itself in on_cancel if the call is canceled.
         if (server_context.cancel_lock) server_context.cancel_lock->m_lock.unlock();
-        return TryFinally(
+        InvokeContext& invoke_context = server_context;
+        // Return type of the invoked method, used below to forward the result
+        // to BuildField with its original value category: by-value/rvalue
+        // results are moved from the temporary stored by TryFinally, while
+        // lvalue-reference results are passed through as lvalues.
+        using MethodResult = decltype(ProxyServerMethodTraits<
+            typename decltype(server_context.call_context.getParams())::Reads
+        >::invoke(server_context, std::forward<Args>(args)...));
+        TryFinally(
             [&]() -> decltype(auto) {
                 return ProxyServerMethodTraits<
                     typename decltype(server_context.call_context.getParams())::Reads
                 >::invoke(server_context, std::forward<Args>(args)...);
             },
-            [&] {
+            [&](auto* result) {
                 if (server_context.cancel_lock) server_context.cancel_lock->m_lock.lock();
                 // If the IPC request was canceled, throw InterruptException
                 // because there is no point continuing and trying to fill the
@@ -552,6 +565,20 @@ struct ServerCall
                 // returned to the caller, so it needs to be discarded like
                 // other result values.
                 if (server_context.request_canceled) throw InterruptException{"canceled"};
+                // result is null if the method threw; skip serialization in that case.
+                if constexpr (!std::is_void_v<ReturnAccessor>) {
+                    if (result) {
+                        // getResults() is safe to call here since the cancel check above
+                        // ensures the connection is still alive.
+                        auto&& results = server_context.call_context.getResults();
+                        // Forward *result with MethodResult's value category so
+                        // move-only results (e.g. vector<unique_ptr<Interface>>)
+                        // can be moved into the response rather than copied.
+                        BuildField(TypeList<std::remove_reference_t<MethodResult>>(),
+                            invoke_context, Make<StructField, ReturnAccessor>(results),
+                            static_cast<MethodResult&&>(*result));
+                    }
+                }
             });
     }
 };
@@ -562,22 +589,6 @@ struct ServerDestroy
     void invoke(ServerContext& server_context, TypeList<>, Args&&... args) const
     {
         server_context.proxy_server.invokeDestroy(std::forward<Args>(args)...);
-    }
-};
-
-template <typename Accessor, typename Parent>
-struct ServerRet : Parent
-{
-    ServerRet(Parent parent) : Parent(parent) {}
-
-    template <typename ServerContext, typename... Args>
-    void invoke(ServerContext& server_context, TypeList<>, Args&&... args) const
-    {
-        auto&& result = Parent::invoke(server_context, TypeList<>(), std::forward<Args>(args)...);
-        auto&& results = server_context.call_context.getResults();
-        InvokeContext& invoke_context = server_context;
-        BuildField(TypeList<decltype(result)>(), invoke_context, Make<StructField, Accessor>(results),
-            std::forward<decltype(result)>(result));
     }
 };
 
@@ -861,7 +872,10 @@ extern std::atomic<int> server_reqs;
 //! Entry point called by generated server code that looks like:
 //!
 //! kj::Promise<void> ProxyServer<InterfaceName>::methodName(CallContext call_context) {
-//!     return serverInvoke(*this, call_context, MakeServerField<0, ...>(MakeServerField<1, ...>(Make<ServerRet, ...>(ServerCall()))));
+//!     return serverInvoke(*this, call_context,
+//!         MakeServerField<1, ...>(ServerCall<...>()));  // non-void
+//!     return serverInvoke(*this, call_context,
+//!         MakeServerField<0, ...>(ServerCall<void>()));  // void
 //! }
 //!
 //! Ellipses above are where generated Accessor<> type declarations are inserted.
