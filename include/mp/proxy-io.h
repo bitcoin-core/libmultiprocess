@@ -255,7 +255,7 @@ public:
 
     //! Run event loop. Does not return until shutdown. This should only be
     //! called once from the m_thread_id thread. This will block until
-    //! the m_num_clients reference count is 0.
+    //! the m_num_refs reference count is 0.
     void loop();
 
     //! Run function on event loop thread. Does not return until function completes.
@@ -314,9 +314,13 @@ public:
     //! Pipe write handle used to wake up the event loop thread.
     int m_post_fd = -1;
 
-    //! Number of clients holding references to ProxyServerBase objects that
-    //! reference this event loop.
-    int m_num_clients MP_GUARDED_BY(m_mutex) = 0;
+    //! Number of EventLoopRef instances referencing this event loop. This is a
+    //! sum of the number of client and server objects (Connection, ProxyClient,
+    //! ProxyServer) using the loop, plus temporary references held while
+    //! posting functions to the loop, plus any references held by external code
+    //! to keep the loop running. The loop() method exits when this count drops
+    //! to 0 (and m_async_fns is empty).
+    int m_num_refs MP_GUARDED_BY(m_mutex) = 0;
 
     //! Mutex and condition variable used to post tasks to event loop and async
     //! thread.
