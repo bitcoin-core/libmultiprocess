@@ -81,33 +81,98 @@ struct StructField
 };
 
 
+//! @par ReadField destination types — ReadDestEmplace, ReadDestUpdate, ReadDestTemp()
+//!
+//! ReadField and CustomReadField accept a destination argument controlling how
+//! the deserialized C++ value is created or updated. Callers choose from:
+//!
+//! - ReadDestEmplace: provide an emplace callback that constructs the new
+//!   object. The callback decides where the object lives — directly in a
+//!   container via emplace_back, inside a std::optional via emplace, as a
+//!   local temporary, as a thrown exception, or anywhere else.
+//! - ReadDestUpdate: provide a reference to an existing object to update in place.
+//! - ReadDestTemp(): a helper function (not a class) returning a ReadDestEmplace
+//!   that constructs a local temporary, allowing ReadField to return the new
+//!   value directly without a separately declared variable.
+//!
+//! **Contract for CustomReadField implementors:** Every CustomReadField overload
+//! must declare `decltype(auto)` as its return type and return the result of
+//! `read_dest.construct(...)` or `read_dest.update(...)` without discarding it.
+//! Most ReadField callers ignore the return value, so this requirement is easy
+//! to miss. It matters when ReadDestTemp() is passed: in that case,
+//! construct() and update() return the newly constructed value as a prvalue,
+//! and C++17 guaranteed copy elision propagates it through ReadField to the
+//! caller. Discarding the return value or declaring a concrete return type
+//! prevents the caller from receiving the value.
+//!
+//! **Contract for emplace callbacks:** The required return type depends on
+//! how the callback is used:
+//!
+//! - **Typical case (container emplace) — return `auto&`.** The callback
+//!   should return a reference to the newly created slot. This is needed
+//!   because ReadDestEmplace::update() calls construct() with no arguments
+//!   to obtain a mutable reference to the slot, then passes it to the update
+//!   function. The requirement is easy to miss: for `std::vector<int>`,
+//!   int's CustomReadField calls construct(value) and discards the return, so
+//!   a void return appears to work. But for
+//!   `std::vector<std::shared_ptr<int>>`, shared_ptr's CustomReadField calls
+//!   update(), which needs the reference to assign a make_shared result to the
+//!   emplaced slot. Emplace callbacks for generic container types must return
+//!   `auto&` regardless of the contained type, because which path
+//!   (construct() vs update()) the contained type's CustomReadField takes is
+//!   not visible at the point the emplace callback is written.
+//!
+//! - **ReadDestTemp() case — return a prvalue.** ReadDestTemp()'s emplace
+//!   callback returns `LocalType{args...}` as a prvalue rather than a
+//!   reference. Mandatory copy elision propagates this prvalue through
+//!   construct(), CustomReadField, and ReadField back to the caller, allowing
+//!   non-movable types to be returned without any move constructor (see
+//!   ReadDestTemp()).
+//!
+//! - **Exception — reference-like proxy.** If the contained type's
+//!   CustomReadField is known to always call construct() and never update(),
+//!   the emplace callback may safely return a non-reference proxy object
+//!   rather than a real reference. The only known case is
+//!   `std::vector<bool>`: its emplace callback calls emplace_back() +
+//!   back(), and back() returns std::vector<bool>::reference, a proxy by
+//!   value rather than a real reference. This is safe because bool's
+//!   CustomReadField always calls construct(), never update(), so the proxy
+//!   return value is discarded. Whether there are other legitimate uses for
+//!   reference-like proxy returns is unclear.
 
-// Destination parameter type that can be passed to ReadField function as an
-// alternative to ReadDestUpdate. It allows the ReadField implementation to call
-// the provided emplace_fn function with constructor arguments, so it only needs
-// to determine the arguments, and can let the emplace function decide how to
-// actually construct the read destination object. For example, if a std::string
-// is being read, the ReadField call will call the custom emplace_fn with char*
-// and size_t arguments, and the emplace function can decide whether to call the
-// constructor via the operator, make_shared, emplace or just return a
-// temporary string that is moved from.
+//! Destination parameter passed to ReadField as an alternative to
+//! ReadDestUpdate. Allows ReadField to call the provided emplace_fn with
+//! constructor arguments, so ReadField only determines those arguments and
+//! leaves the emplace function to decide how to actually create the destination
+//! object. For example, when reading a std::string, ReadField calls emplace_fn
+//! with char* and size_t arguments, and emplace_fn can choose to call the
+//! constructor directly, call make_shared, emplace into a container, or return
+//! a temporary to move from.
 template <typename LocalType, typename EmplaceFn>
 struct ReadDestEmplace
 {
     ReadDestEmplace(TypeList<LocalType>, EmplaceFn emplace_fn) : m_emplace_fn(std::move(emplace_fn)) {}
 
-    //! Simple case. If ReadField implementation calls this construct() method
-    //! with constructor arguments, just pass them on to the emplace function.
+    //! Simple case. If ReadField calls construct() with constructor arguments,
+    //! forward them to the emplace function and return its result.
+    //!
+    //! The return value is forwarded through the calling CustomReadField (see
+    //! the group contract section above) and is used when ReadDestTemp() is passed.
     template <typename... Args>
     decltype(auto) construct(Args&&... args)
     {
         return m_emplace_fn(std::forward<Args>(args)...);
     }
 
-    //! More complicated case. If ReadField implementation works by calling this
-    //! update() method, adapt it call construct() instead. This requires
-    //! LocalType to have a default constructor to create new object that can be
-    //! passed to update()
+    //! More complicated case. If ReadField works by calling update(), adapt it
+    //! to call construct() instead. Calls construct() with no arguments to
+    //! default-construct an object via the emplace callback (obtaining a
+    //! reference to it), then passes that reference to update_fn. Requires the
+    //! emplace callback to be callable with no arguments. Returns the result of
+    //! construct().
+    //!
+    //! The return value is forwarded through the calling CustomReadField (see
+    //! the group contract section above) and is used when ReadDestTemp() is passed.
     template <typename UpdateFn>
     decltype(auto) update(UpdateFn&& update_fn)
     {
@@ -128,8 +193,48 @@ struct ReadDestEmplace
     EmplaceFn m_emplace_fn;
 };
 
-//! Helper function to create a ReadDestEmplace object that constructs a
-//! temporary, ReadField can return.
+//! Returns a ReadDestEmplace that constructs a local temporary, so ReadField
+//! can be called and its result used directly in an expression without
+//! declaring a separate variable or container.
+//!
+//! ReadDestTemp() is mostly a convenience: any type that is
+//! default-constructible or movable can be handled without it using
+//! ReadDestUpdate or ReadDestEmplace into a std::optional. For example,
+//! clientInvoke uses ReadDestTemp() for method return values as a convenience
+//! — the alternative would be ReadDestEmplace into a std::optional followed by
+//! a move, which is more verbose.
+//!
+//! For types that are neither default-constructible, copyable, nor movable,
+//! ReadDestTemp() can become strictly necessary. Two known cases:
+//!
+//! **Case 1 — non-movable type as an IPC method return value.** clientInvoke
+//! calls ReadField to deserialize the proxy method return value. If the return
+//! type (e.g., Pinned<int>, see test/mp/test/foo.h) has no default constructor
+//! and is neither copyable nor movable, it cannot be stored in an intermediate
+//! std::optional or variable between deserialization and return. ReadDestTemp()
+//! allows the value to be constructed directly in the return slot via C++17
+//! guaranteed copy elision.
+//!
+//! **Case 2 — non-movable type needed inside a CustomReadField
+//! implementation.** CustomReadField implementations may call ReadField
+//! internally to deserialize sub-values, then pass those values to
+//! constructors, functions, or other expressions. If a sub-value type is
+//! neither default-constructible nor movable, ReadDestTemp() is the only way
+//! to obtain it as a prvalue for immediate use without storing it first. For
+//! example, CustomReadField for Pinned<T> (see test/mp/test/foo-types.h)
+//! calls read_dest.construct(ReadField(TypeList<T>(), ..., ReadDestTemp<T>())).
+//! Using ReadDestTemp<T>() is necessary when T is itself non-movable (e.g.,
+//! T = Pinned<int>), since neither ReadDestUpdate (requires a pre-existing T)
+//! nor ReadDestEmplace into std::optional<T> (requires T to be movable) would
+//! work.
+//!
+//! There may be other cases where ReadDestTemp() is strictly necessary beyond
+//! these two.
+//!
+//! Examples of Bitcoin Core types that lack default constructors and are used
+//! in IPC: util::Result, PartiallySignedTransaction, CreatedTransactionResult,
+//! WalletAddress. ReadDestTemp() can be useful when constructing or returning
+//! values of these types.
 template <typename LocalType>
 auto ReadDestTemp()
 {
@@ -147,7 +252,11 @@ struct ReadDestUpdate
 {
     ReadDestUpdate(Value& value) : m_value(value) {}
 
-    //! Simple case. If ReadField works by calling update() just forward arguments to update_fn.
+    //! Simple case. If ReadField works by calling update(), forward arguments
+    //! to update_fn and return a reference to m_value.
+    //!
+    //! The return value is forwarded through the calling CustomReadField (see
+    //! the group contract section above) and is used when ReadDestTemp() is passed.
     template <typename UpdateFn>
     Value& update(UpdateFn&& update_fn)
     {
@@ -155,11 +264,18 @@ struct ReadDestUpdate
         return m_value;
     }
 
-    //! More complicated case. If ReadField works by calling construct(), need
-    //! to reconstruct m_value in place.
+    //! More complicated case. If ReadField works by calling construct(),
+    //! reconstruct m_value in place via explicit destructor call and placement
+    //! new, and return a reference to m_value.
+    //!
+    //! The return value is forwarded through the calling CustomReadField (see
+    //! the group contract section above) and is used when ReadDestTemp() is passed.
     template <typename... Args>
     Value& construct(Args&&... args)
     {
+        // Exception-unsafe: if ~Value() or the Value constructor throws,
+        // m_value is left in a destroyed state with no clear recovery path
+        // (aborting may be the right behavior, but this is unresolved).
         m_value.~Value();
         new (&m_value) Value(std::forward<Args>(args)...);
         return m_value;
