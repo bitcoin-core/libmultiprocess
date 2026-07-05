@@ -53,7 +53,7 @@ EventLoopRef::EventLoopRef(EventLoop& loop, Lock* lock) : m_loop(&loop), m_lock(
 {
     auto loop_lock{PtrOrValue{m_lock, m_loop->m_mutex}};
     loop_lock->assert_locked(m_loop->m_mutex);
-    m_loop->m_num_clients += 1;
+    m_loop->m_num_refs += 1;
 }
 
 // Due to the conditionals in this function, MP_NO_TSA is required to avoid
@@ -65,8 +65,8 @@ void EventLoopRef::reset(bool relock) MP_NO_TSA
         m_loop = nullptr;
         auto loop_lock{PtrOrValue{m_lock, loop->m_mutex}};
         loop_lock->assert_locked(loop->m_mutex);
-        assert(loop->m_num_clients > 0);
-        loop->m_num_clients -= 1;
+        assert(loop->m_num_refs > 0);
+        loop->m_num_refs -= 1;
         if (loop->done()) {
             loop->m_cv.notify_all();
             int post_fd{loop->m_post_fd};
@@ -220,7 +220,7 @@ EventLoop::~EventLoop()
     KJ_ASSERT(!m_async_fns);
     KJ_ASSERT(m_wait_fd == -1);
     KJ_ASSERT(m_post_fd == -1);
-    KJ_ASSERT(m_num_clients == 0);
+    KJ_ASSERT(m_num_refs == 0);
 
     // Spin event loop. wait for any promises triggered by RPC shutdown.
     // auto cleanup = kj::evalLater([]{});
@@ -322,8 +322,8 @@ void EventLoop::startAsyncThread()
 
 bool EventLoop::done() const
 {
-    assert(m_num_clients >= 0);
-    return m_num_clients == 0 && m_async_fns->empty();
+    assert(m_num_refs >= 0);
+    return m_num_refs == 0 && m_async_fns->empty();
 }
 
 std::tuple<ConnThread, bool> SetThread(GuardedRef<ConnThreads> threads, Connection* connection, const std::function<Thread::Client()>& make_thread)
