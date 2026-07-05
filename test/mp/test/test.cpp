@@ -40,6 +40,15 @@
 #include <utility>
 #include <vector>
 
+//! Assert that a call throws std::runtime_error with the given message.
+#define EXPECT_EXCEPTION(call, message)                                           \
+    try {                                                                         \
+        call;                                                                     \
+        KJ_EXPECT(false);                                                         \
+    } catch (const std::runtime_error& e) {                                       \
+        KJ_EXPECT(std::string_view{e.what()} == message);                         \
+    }
+
 namespace mp {
 namespace test {
 
@@ -236,6 +245,11 @@ KJ_TEST("Call FooInterface methods")
 
     KJ_EXPECT(foo->passFn([]{ return 10; }) == 10);
 
+    // Recursive async IPC calls
+    KJ_EXPECT(foo->passFn([foo]{
+        return foo->passFn([]{ return 1; });
+    }) == 1);
+
     std::vector<FooDataRef> data_in;
     data_in.push_back(std::make_shared<FooData>(FooData{'H', 'i'}));
     data_in.push_back(nullptr);
@@ -253,14 +267,7 @@ KJ_TEST("Call IPC method after client connection is closed")
     KJ_EXPECT(foo->add(1, 2) == 3);
     setup.client_disconnect();
 
-    bool disconnected{false};
-    try {
-        foo->add(1, 2);
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method called after disconnect.");
-        disconnected = true;
-    }
-    KJ_EXPECT(disconnected);
+    EXPECT_EXCEPTION(foo->add(1, 2), "IPC client method called after disconnect.");
 }
 
 KJ_TEST("Calling IPC method after server connection is closed")
@@ -270,14 +277,7 @@ KJ_TEST("Calling IPC method after server connection is closed")
     KJ_EXPECT(foo->add(1, 2) == 3);
     setup.server_disconnect();
 
-    bool disconnected{false};
-    try {
-        foo->add(1, 2);
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-        disconnected = true;
-    }
-    KJ_EXPECT(disconnected);
+    EXPECT_EXCEPTION(foo->add(1, 2), "IPC client method call interrupted by disconnect.");
 }
 
 KJ_TEST("Calling IPC method and disconnecting during the call")
@@ -290,14 +290,7 @@ KJ_TEST("Calling IPC method and disconnecting during the call")
     // handling the callFn call to make sure this case is handled cleanly.
     setup.server->m_impl->m_fn = setup.client_disconnect;
 
-    bool disconnected{false};
-    try {
-        foo->callFn();
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-        disconnected = true;
-    }
-    KJ_EXPECT(disconnected);
+    EXPECT_EXCEPTION(foo->callFn(), "IPC client method call interrupted by disconnect.");
 }
 
 KJ_TEST("Calling IPC method, disconnecting and blocking during the call")
@@ -332,14 +325,7 @@ KJ_TEST("Calling IPC method, disconnecting and blocking during the call")
         signal.get_future().get();
     };
 
-    bool disconnected{false};
-    try {
-        foo->callFnAsync();
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-        disconnected = true;
-    }
-    KJ_EXPECT(disconnected);
+    EXPECT_EXCEPTION(foo->callFnAsync(), "IPC client method call interrupted by disconnect.");
 
     // Now that the disconnect has been detected, set signal allowing the
     // callFnAsync() IPC call to return. Since signalling may not wake up the
@@ -376,14 +362,7 @@ KJ_TEST("Worker thread destroyed before it is initialized")
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     };
 
-    bool disconnected{false};
-    try {
-        foo->callFnAsync();
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-        disconnected = true;
-    }
-    KJ_EXPECT(disconnected);
+    EXPECT_EXCEPTION(foo->callFnAsync(), "IPC client method call interrupted by disconnect.");
 }
 
 KJ_TEST("Calling async IPC method, with server disconnect racing the call")
@@ -408,12 +387,7 @@ KJ_TEST("Calling async IPC method, with server disconnect racing the call")
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     };
 
-    try {
-        foo->callFnAsync();
-        KJ_EXPECT(false);
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-    }
+    EXPECT_EXCEPTION(foo->callFnAsync(), "IPC client method call interrupted by disconnect.");
 }
 
 KJ_TEST("Calling async IPC method, with server disconnect after cleanup")
@@ -437,12 +411,7 @@ KJ_TEST("Calling async IPC method, with server disconnect after cleanup")
         setup.server_disconnect();
     };
 
-    try {
-        foo->callFnAsync();
-        KJ_EXPECT(false);
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-    }
+    EXPECT_EXCEPTION(foo->callFnAsync(), "IPC client method call interrupted by disconnect.");
 }
 
 KJ_TEST("Destroying ProxyClient<> with destroy method after peer disconnect")
