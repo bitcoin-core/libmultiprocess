@@ -31,35 +31,16 @@ decltype(auto) CustomReadField(TypeList<std::vector<LocalType>>,
     Input&& input,
     ReadDest&& read_dest)
 {
-    return read_dest.update([&](auto& value) {
-        auto data = input.get();
-        value.clear();
-        value.reserve(data.size());
-        for (auto item : data) {
-            ReadField(TypeList<LocalType>(), invoke_context, Make<ValueField>(item),
-                ReadDestEmplace(TypeList<LocalType>(), [&](auto&&... args) -> auto& {
-                    value.emplace_back(std::forward<decltype(args)>(args)...);
-                    return value.back();
-                }));
-        }
-    });
-}
-
-template <typename Input, typename ReadDest>
-decltype(auto) CustomReadField(TypeList<std::vector<bool>>,
-                               Priority<1>,
-                               InvokeContext& invoke_context,
-                               Input&& input,
-                               ReadDest&& read_dest)
-{
-    return read_dest.update([&](auto& value) {
-        auto data = input.get();
-        value.clear();
-        value.reserve(data.size());
-        for (auto item : data) {
-            value.push_back(ReadField(TypeList<bool>(), invoke_context, Make<ValueField>(item), ReadDestTemp<bool>()));
-        }
-    });
+    return ReadList(
+        TypeList<LocalType>(), invoke_context, input, read_dest,
+        [&](auto& value, size_t size) {
+            value.clear();
+            value.reserve(size);
+        },
+        [&](auto& value, auto&&... args) -> decltype(auto) {
+            value.emplace_back(std::forward<decltype(args)>(args)...);
+            return value.back();
+        });
 }
 } // namespace mp
 
