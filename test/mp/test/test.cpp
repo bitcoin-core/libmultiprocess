@@ -269,6 +269,16 @@ KJ_TEST("Call FooInterface methods")
     KJ_REQUIRE(data_out[0] != nullptr);
     KJ_EXPECT(*data_out[0] == *data_in[0]);
     KJ_EXPECT(!data_out[1]);
+
+    // Test returning vector<unique_ptr<interface>> from server. This exercises
+    // BuildList with interface element types, which requires non-const iteration
+    // so unique_ptr::release() can transfer ownership to the proxy server.
+    std::vector<std::unique_ptr<Bar>> bars{foo->listBars(3)};
+    KJ_REQUIRE(bars.size() == 3u);
+    for (int i = 0; i < 3; ++i) {
+        KJ_REQUIRE(bars[i] != nullptr);
+        KJ_EXPECT(bars[i]->value() == i);
+    }
 }
 
 KJ_TEST("Call IPC method after client connection is closed")

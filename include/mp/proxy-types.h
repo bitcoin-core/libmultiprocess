@@ -285,9 +285,28 @@ void BuildList(TypeList<LocalType>, InvokeContext& invoke_context, Output&& outp
 {
     auto list = output.init(value.size());
     size_t i = 0;
-    for (const auto& elem : value) {
-        BuildField(TypeList<LocalType>(), invoke_context, ListOutput<typename decltype(list)::Builds>(list, i), elem);
-        ++i;
+    // Iterate with an explicit iterator rather than a range-for loop so the
+    // value category of `*it` is passed through to BuildField unchanged. This
+    // matters for two reasons:
+    //
+    // - Elements must be passed as non-const so that BuildField can move out of
+    //   them, e.g. calling unique_ptr::release() to transfer ownership of an
+    //   interface pointer to the capnp server.
+    //
+    // - For proxy containers like std::vector<bool>, `*it` is a prvalue proxy
+    //   object rather than a reference. A range-for loop would bind it to a
+    //   named variable and demote it to an lvalue; passing `*it` directly
+    //   preserves the prvalue-ness.
+    //
+    // Only move out of elements when `value` itself is an rvalue container that
+    // is about to be destroyed. When it is an lvalue reference owned by the
+    // caller, pass elements as lvalues so BuildField does not move from them.
+    for (auto it = value.begin(); it != value.end(); ++it, ++i) {
+        if constexpr (std::is_lvalue_reference_v<Value&&>) {
+            BuildField(TypeList<LocalType>(), invoke_context, ListOutput<typename decltype(list)::Builds>(list, i), *it);
+        } else {
+            BuildField(TypeList<LocalType>(), invoke_context, ListOutput<typename decltype(list)::Builds>(list, i), std::move(*it));
+        }
     }
 }
 

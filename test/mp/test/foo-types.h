@@ -39,6 +39,7 @@ struct ExtendedCallback; // IWYU pragma: export
 struct FooCallback; // IWYU pragma: export
 struct FooFn; // IWYU pragma: export
 struct FooInterface; // IWYU pragma: export
+struct BarInterface; // IWYU pragma: export
 } // namespace messages
 
 template <typename Output>
