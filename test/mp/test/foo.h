@@ -22,9 +22,10 @@ struct FooStruct
 {
     std::string name;
     std::set<int> set_int;
-    std::vector<bool> v_bool;
+    std::vector<bool> vector_bool;
     std::optional<int> optional_int;
     std::unordered_set<int> unordered_set_int;
+    std::map<std::string, int> map_string_int;
 };
 
 enum class FooEnum : uint8_t { ONE = 1, TWO = 2, };
