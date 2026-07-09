@@ -239,6 +239,9 @@ KJ_TEST("Call FooInterface methods")
 
     foo->passEmpty(FooEmpty{});
 
+    FooData empty_data_out = foo->passData(FooData{});
+    KJ_EXPECT(empty_data_out.empty());
+
     FooMessage message1;
     message1.message = "init";
     FooMessage message2{foo->passMessage(message1)};
