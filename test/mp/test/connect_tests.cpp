@@ -15,18 +15,24 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <cstring> // IWYU pragma: keep
 #include <functional>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <thread>
 
 namespace mp {
 namespace test {
 namespace {
+
+constexpr auto FAILURE_TIMEOUT = std::chrono::seconds{30};
 
 //! Default event loop log handler used by tests, throws so the calling code
 //! can assert on errors.
@@ -100,6 +106,68 @@ KJ_TEST("ConnectStream connects to a socket serving a valid init interface")
     KJ_EXPECT(true);
 }
 
+KJ_TEST("ConnectStream throws when the socket is already disconnected")
+{
+    TestSetup setup;
+
+    close(setup.server_fd);
+
+    try {
+        auto init = ConnectStream<messages::FooInit>(*setup.loop, MakeStream(*setup.loop, setup.client_fd));
+
+        KJ_EXPECT(false);
+    } catch (const std::runtime_error& e) {
+        std::string_view reason = e.what();
+
+        KJ_EXPECT(reason == "IPC client method call interrupted by disconnect.");
+    }
+}
+
+KJ_TEST("ConnectStream defers disconnect failure to the first IPC request for interfaces without construct()")
+{
+    TestSetup setup;
+
+    close(setup.server_fd);
+
+    // Without a construct() method no IPC call is made during client
+    // creation, so ConnectStream succeeds even though the peer is gone.
+    auto foo = ConnectStream<messages::FooInterface>(*setup.loop, MakeStream(*setup.loop, setup.client_fd));
+
+    try {
+        foo->initThreadMap();
+        KJ_EXPECT(false);
+    } catch (const std::runtime_error& e) {
+        std::string_view reason = e.what();
+
+        KJ_EXPECT(reason == "IPC client method called after disconnect.");
+    }
+}
+
+KJ_TEST("ConnectStream handles a disconnect when no client calls are made")
+{
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool warned = false;
+
+    TestSetup setup([&](mp::LogMessage log) {
+        if (log.level == mp::Log::Warning && log.message.find("unexpected network disconnect") != std::string::npos) {
+            const std::lock_guard<std::mutex> lock(mutex);
+            warned = true;
+            cv.notify_all();
+        }
+        DefaultLogHandler(log);
+    });
+
+    close(setup.server_fd);
+
+    auto foo = ConnectStream<messages::FooInterface>(*setup.loop, MakeStream(*setup.loop, setup.client_fd));
+
+    // The disconnect handler registered by ConnectStream should run and
+    // delete the connection even when no calls are ever made.
+    std::unique_lock<std::mutex> lock(mutex);
+    KJ_EXPECT(cv.wait_for(lock, FAILURE_TIMEOUT, [&] { return warned; }));
+}
+
 KJ_TEST("ConnectStream throws when the socket disconnects after receiving data")
 {
     TestSetup setup;
@@ -124,7 +192,7 @@ KJ_TEST("ConnectStream throws when the socket disconnects after receiving data")
         if (server_thread.joinable()) server_thread.join();
 
         std::string_view reason = e.what();
-        KJ_EXPECT(reason == "IPC client method called after disconnect.");
+        KJ_EXPECT(reason == "IPC client method call interrupted by disconnect.");
     }
 }
 
@@ -162,7 +230,7 @@ KJ_TEST("ConnectStream throws when a connection accepted from a listener disconn
         if (server_thread.joinable()) server_thread.join();
 
         std::string_view reason = e.what();
-        KJ_EXPECT(reason == "IPC client method called after disconnect.");
+        KJ_EXPECT(reason == "IPC client method call interrupted by disconnect.");
     }
 }
 
