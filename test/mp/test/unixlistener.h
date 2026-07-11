@@ -19,9 +19,9 @@
 namespace mp {
 namespace test {
 
-//! Owns a temporary Unix-domain listening socket used by ListenSetup. Tests call
-//! Connect() to create client socket FDs and release() to transfer the listening
-//! FD to ListenConnections().
+//! Owns a temporary Unix-domain listening socket. Tests call
+//! MakeConnectedSocket() to create client socket FDs and release() to transfer
+//! ownership of the listening FD.
 class UnixListener
 {
 public:
