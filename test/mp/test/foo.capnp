@@ -27,6 +27,7 @@ interface FooInterface $Proxy.wrap("mp::test::FooImplementation") {
     callbackExtended @10 (context :Proxy.Context, callback :ExtendedCallback, arg: Int32) -> (result :Int32);
     passCustom @11 (arg :FooCustom) -> (result :FooCustom);
     passEmpty @12 (arg :FooEmpty) -> (result :FooEmpty);
+    passData @24 (arg :Data) -> (result :Data);
     passMessage @13 (arg :FooMessage) -> (result :FooMessage);
     passMutable @14 (arg :FooMutable) -> (arg :FooMutable);
     passEnum @15 (arg :Int32) -> (result :Int32);
