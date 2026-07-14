@@ -7,6 +7,9 @@
 
 #include <mp/util.h>
 
+#include <algorithm>
+#include <ranges>
+
 namespace mp {
 template <typename Value, typename Output>
 void CustomBuildField(TypeList<std::string>,
@@ -16,7 +19,7 @@ void CustomBuildField(TypeList<std::string>,
     Output&& output)
 {
     auto result = output.init(value.size());
-    memcpy(result.begin(), value.data(), value.size());
+    std::ranges::copy(value, result.begin());
 }
 
 template <typename Input, typename ReadDest>
