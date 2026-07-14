@@ -225,7 +225,7 @@ KJ_TEST("ListenConnections enforces a local connection limit")
 {
     // With max-connections=1, the second socket can connect to the kernel
     // backlog, but ListenConnections should not accept or serve it until the
-    // first accepts clients disconnects.
+    // first accepted client disconnects.
 
     ListenSetup server(/*max_connections=*/1);
 
