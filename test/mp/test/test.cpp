@@ -18,9 +18,12 @@
 #include <kj/async.h>
 #include <kj/async-io.h>
 #include <kj/common.h>
+#include <kj/exception.h>
 #include <kj/debug.h>
 #include <kj/memory.h>
+#include <kj/string.h>
 #include <kj/test.h>
+#include <map>
 #include <memory>
 #include <mp/proxy.h>
 #include <mp/proxy.capnp.h>
@@ -37,6 +40,15 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+//! Assert that a call throws std::runtime_error with the given message.
+#define EXPECT_EXCEPTION(call, message)                                           \
+    try {                                                                         \
+        call;                                                                     \
+        KJ_EXPECT(false);                                                         \
+    } catch (const std::runtime_error& e) {                                       \
+        KJ_EXPECT(std::string_view{e.what()} == message);                         \
+    }
 
 namespace mp {
 namespace test {
@@ -146,10 +158,12 @@ KJ_TEST("Call FooInterface methods")
     in.set_int.insert(1);
     in.unordered_set_int.insert(2);
     in.unordered_set_int.insert(1);
-    in.v_bool.push_back(false);
-    in.v_bool.push_back(true);
-    in.v_bool.push_back(false);
+    in.vector_bool.push_back(false);
+    in.vector_bool.push_back(true);
+    in.vector_bool.push_back(false);
     in.optional_int = 3;
+    in.map_string_int.emplace("a", 1);
+    in.map_string_int.emplace("b", 2);
     FooStruct out = foo->pass(in);
     KJ_EXPECT(in.name == out.name);
     KJ_EXPECT(in.set_int.size() == out.set_int.size());
@@ -160,11 +174,16 @@ KJ_TEST("Call FooInterface methods")
     for (const auto& elem : in.unordered_set_int) {
         KJ_EXPECT(out.unordered_set_int.count(elem) == 1);
     }
-    KJ_EXPECT(in.v_bool.size() == out.v_bool.size());
-    for (size_t i = 0; i < in.v_bool.size(); ++i) {
-        KJ_EXPECT(in.v_bool[i] == out.v_bool[i]);
+    KJ_EXPECT(in.vector_bool.size() == out.vector_bool.size());
+    for (size_t i = 0; i < in.vector_bool.size(); ++i) {
+        KJ_EXPECT(in.vector_bool[i] == out.vector_bool[i]);
     }
     KJ_EXPECT(in.optional_int == out.optional_int);
+    KJ_EXPECT(in.map_string_int.size() == out.map_string_int.size());
+    for (auto init{in.map_string_int.begin()}, outit{out.map_string_int.begin()}; init != in.map_string_int.end() && outit != out.map_string_int.end(); ++init, ++outit) {
+        KJ_EXPECT(init->first == outit->first);
+        KJ_EXPECT(init->second == outit->second);
+    }
 
     // Additional checks for std::optional member
     KJ_EXPECT(foo->pass(in).optional_int == 3);
@@ -220,6 +239,9 @@ KJ_TEST("Call FooInterface methods")
 
     foo->passEmpty(FooEmpty{});
 
+    FooData empty_data_out = foo->passData(FooData{});
+    KJ_EXPECT(empty_data_out.empty());
+
     FooMessage message1;
     message1.message = "init";
     FooMessage message2{foo->passMessage(message1)};
@@ -233,6 +255,11 @@ KJ_TEST("Call FooInterface methods")
     KJ_EXPECT(foo->passDouble(1.25) == 1.25);
 
     KJ_EXPECT(foo->passFn([]{ return 10; }) == 10);
+
+    // Recursive async IPC calls
+    KJ_EXPECT(foo->passFn([foo]{
+        return foo->passFn([]{ return 1; });
+    }) == 1);
 
     std::vector<FooDataRef> data_in;
     data_in.push_back(std::make_shared<FooData>(FooData{'H', 'i'}));
@@ -251,14 +278,7 @@ KJ_TEST("Call IPC method after client connection is closed")
     KJ_EXPECT(foo->add(1, 2) == 3);
     setup.client_disconnect();
 
-    bool disconnected{false};
-    try {
-        foo->add(1, 2);
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method called after disconnect.");
-        disconnected = true;
-    }
-    KJ_EXPECT(disconnected);
+    EXPECT_EXCEPTION(foo->add(1, 2), "IPC client method called after disconnect.");
 }
 
 KJ_TEST("Calling IPC method after server connection is closed")
@@ -268,14 +288,7 @@ KJ_TEST("Calling IPC method after server connection is closed")
     KJ_EXPECT(foo->add(1, 2) == 3);
     setup.server_disconnect();
 
-    bool disconnected{false};
-    try {
-        foo->add(1, 2);
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-        disconnected = true;
-    }
-    KJ_EXPECT(disconnected);
+    EXPECT_EXCEPTION(foo->add(1, 2), "IPC client method call interrupted by disconnect.");
 }
 
 KJ_TEST("Calling IPC method and disconnecting during the call")
@@ -288,14 +301,7 @@ KJ_TEST("Calling IPC method and disconnecting during the call")
     // handling the callFn call to make sure this case is handled cleanly.
     setup.server->m_impl->m_fn = setup.client_disconnect;
 
-    bool disconnected{false};
-    try {
-        foo->callFn();
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-        disconnected = true;
-    }
-    KJ_EXPECT(disconnected);
+    EXPECT_EXCEPTION(foo->callFn(), "IPC client method call interrupted by disconnect.");
 }
 
 KJ_TEST("Calling IPC method, disconnecting and blocking during the call")
@@ -330,14 +336,7 @@ KJ_TEST("Calling IPC method, disconnecting and blocking during the call")
         signal.get_future().get();
     };
 
-    bool disconnected{false};
-    try {
-        foo->callFnAsync();
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-        disconnected = true;
-    }
-    KJ_EXPECT(disconnected);
+    EXPECT_EXCEPTION(foo->callFnAsync(), "IPC client method call interrupted by disconnect.");
 
     // Now that the disconnect has been detected, set signal allowing the
     // callFnAsync() IPC call to return. Since signalling may not wake up the
@@ -374,14 +373,7 @@ KJ_TEST("Worker thread destroyed before it is initialized")
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     };
 
-    bool disconnected{false};
-    try {
-        foo->callFnAsync();
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-        disconnected = true;
-    }
-    KJ_EXPECT(disconnected);
+    EXPECT_EXCEPTION(foo->callFnAsync(), "IPC client method call interrupted by disconnect.");
 }
 
 KJ_TEST("Calling async IPC method, with server disconnect racing the call")
@@ -406,12 +398,7 @@ KJ_TEST("Calling async IPC method, with server disconnect racing the call")
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     };
 
-    try {
-        foo->callFnAsync();
-        KJ_EXPECT(false);
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-    }
+    EXPECT_EXCEPTION(foo->callFnAsync(), "IPC client method call interrupted by disconnect.");
 }
 
 KJ_TEST("Calling async IPC method, with server disconnect after cleanup")
@@ -435,12 +422,7 @@ KJ_TEST("Calling async IPC method, with server disconnect after cleanup")
         setup.server_disconnect();
     };
 
-    try {
-        foo->callFnAsync();
-        KJ_EXPECT(false);
-    } catch (const std::runtime_error& e) {
-        KJ_EXPECT(std::string_view{e.what()} == "IPC client method call interrupted by disconnect.");
-    }
+    EXPECT_EXCEPTION(foo->callFnAsync(), "IPC client method call interrupted by disconnect.");
 }
 
 KJ_TEST("Destroying ProxyClient<> with destroy method after peer disconnect")
@@ -522,6 +504,77 @@ KJ_TEST("Make simultaneous IPC calls on single remote thread")
         tc.waiter->wait(lock, [&running] { return running == 0; });
     }
     KJ_EXPECT(expected == 400);
+}
+
+KJ_TEST("Call async IPC method dispatched to pool thread")
+{
+    TestSetup setup;
+    ProxyClient<messages::FooInterface>* foo = setup.client.get();
+
+    // Set up the thread map exchange so the client has the server's ThreadMap,
+    // then call makePool to pre-allocate two server threads.
+    foo->initThreadMap();
+    setup.server->m_impl->m_int_fn = [](int n) { return n * 2; };
+
+    ThreadContext& tc{g_thread_context};
+    std::atomic<size_t> running{3};
+    std::promise<void> pool_ready;
+    foo->m_context.loop->sync([&] {
+        auto pool_req = foo->m_context.connection->m_thread_map.makePoolRequest();
+        pool_req.setCount(2);
+        foo->m_context.loop->m_task_set->add(
+            pool_req.send().then([&](auto&&) { pool_ready.set_value(); }));
+    });
+    pool_ready.get_future().get();
+
+    // Send three callIntFnAsync requests with no context.thread set.
+    // The server should dispatch each to a pool thread.
+    auto client{foo->m_client};
+    foo->m_context.loop->sync([&] {
+        for (size_t i = 0; i < running; ++i) {
+            auto request{client.callIntFnAsyncRequest()};
+            request.initContext(); // context present but thread unset
+            request.setArg(static_cast<int32_t>(i + 1));
+            foo->m_context.loop->m_task_set->add(request.send().then(
+                [&running, &tc, i](auto&& results) {
+                    assert(results.getResult() == static_cast<int32_t>((i + 1) * 2));
+                    running -= 1;
+                    Lock lock(tc.waiter->m_mutex);
+                    tc.waiter->m_cv.notify_all();
+                }));
+        }
+    });
+    {
+        Lock lock(tc.waiter->m_mutex);
+        tc.waiter->wait(lock, [&running] { return running == 0; });
+    }
+}
+
+KJ_TEST("Call async IPC method without thread or pool errors correctly")
+{
+    TestSetup setup;
+    ProxyClient<messages::FooInterface>* foo = setup.client.get();
+    setup.server->m_impl->m_fn = [] {};
+
+    // Send a callFnAsync request with no context.thread and no pool configured.
+    // The server should throw the "no thread specified and no pool configured" error.
+    std::promise<void> done;
+    bool error_thrown{false};
+    foo->m_context.loop->sync([&] {
+        auto request{foo->m_client.callFnAsyncRequest()};
+        request.initContext();
+        foo->m_context.loop->m_task_set->add(
+            request.send().then(
+                [&](auto&&) { done.set_value(); },
+                [&](kj::Exception&& e) {
+                    error_thrown = true;
+                    KJ_EXPECT(std::string_view{e.getDescription().cStr()}.find(
+                        "no thread specified and no pool configured") != std::string_view::npos);
+                    done.set_value();
+                }));
+    });
+    done.get_future().get();
+    KJ_EXPECT(error_thrown);
 }
 
 } // namespace test

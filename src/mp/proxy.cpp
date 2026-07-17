@@ -24,22 +24,32 @@
 #include <kj/debug.h>
 #include <kj/exception.h>
 #include <kj/function.h>
+#include <kj/io.h>
 #include <kj/memory.h>
 #include <kj/string.h>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <sys/socket.h>
 #include <thread>
 #include <tuple>
-#include <unistd.h>
 #include <utility>
+#include <vector>
 
 namespace mp {
 
 thread_local ThreadContext g_thread_context; // NOLINT(bitcoin-nontrivial-threadlocal)
+
+Stream MakeStream(EventLoop&loop, SocketId socket)
+{
+    Stream stream;
+    loop.sync([&]() {
+        stream = loop.m_io_context.lowLevelProvider->wrapSocketFd(socket, kj::LowLevelAsyncIoProvider::TAKE_OWNERSHIP);
+    });
+    return stream;
+}
 
 void LoggingErrorHandler::taskFailed(kj::Exception&& exception)
 {
@@ -51,7 +61,7 @@ EventLoopRef::EventLoopRef(EventLoop& loop, Lock* lock) : m_loop(&loop), m_lock(
 {
     auto loop_lock{PtrOrValue{m_lock, m_loop->m_mutex}};
     loop_lock->assert_locked(m_loop->m_mutex);
-    m_loop->m_num_clients += 1;
+    m_loop->m_num_refs += 1;
 }
 
 // Due to the conditionals in this function, MP_NO_TSA is required to avoid
@@ -63,14 +73,24 @@ void EventLoopRef::reset(bool relock) MP_NO_TSA
         m_loop = nullptr;
         auto loop_lock{PtrOrValue{m_lock, loop->m_mutex}};
         loop_lock->assert_locked(loop->m_mutex);
-        assert(loop->m_num_clients > 0);
-        loop->m_num_clients -= 1;
+        assert(loop->m_num_refs > 0);
+        loop->m_num_refs -= 1;
         if (loop->done()) {
             loop->m_cv.notify_all();
-            int post_fd{loop->m_post_fd};
+            // Capture loop->m_post_writer pointer before releasing the lock.
+            // The pointer can't actually change before the write() call below,
+            // but copying it with the lock held instead of accessing it
+            // directly below prevents TSAN false positives because TSAN is
+            // unaware of socketpair write() synchronization and might falsely
+            // report the pointer being used in this thread and assigned in the
+            // other thread without synchronization between.
+            kj::OutputStream* post_writer{loop->m_post_writer.get()};
             loop_lock->unlock();
             char buffer = 0;
-            KJ_SYSCALL(write(post_fd, &buffer, 1)); // NOLINT(bugprone-suspicious-semicolon)
+            // It safe to access post_writer here because the loop can't
+            // exit until this write takes place. See "Intentionally do not
+            // break..."  comment in EventLoop::loop
+            post_writer->write(&buffer, 1);
             // By default, do not try to relock `loop_lock` after writing,
             // because the event loop could wake up and destroy itself and the
             // mutex might no longer exist.
@@ -81,7 +101,7 @@ void EventLoopRef::reset(bool relock) MP_NO_TSA
 
 ProxyContext::ProxyContext(Connection* connection) : connection(connection), loop{*connection->m_loop} {}
 
-Connection::~Connection()
+Connection::~Connection() noexcept(false)
 {
     // Connection destructor is always called on the event loop thread. If this
     // is a local disconnect, it will trigger I/O, so this needs to run on the
@@ -100,6 +120,38 @@ Connection::~Connection()
     // executing. In that case, Cap'n Proto will destroy the ProxyServer objects
     // after the calls finish.
     m_rpc_system.reset();
+
+    // shutdownWrite is needed on Windows so pending data in the m_stream socket
+    // will be sent instead of discarded when m_stream is destroyed. On unix,
+    // this doesn't seem to be needed because data is sent more reliably.
+    //
+    // Sending pending data is important if the connection is a socketpair
+    // because when one side of the socketpair is closed, the other side doesn't
+    // seem to receive any onDisconnect event. So it is important for the other
+    // side to instead receive Cap'n Proto "release" messages (see `struct
+    // Release` in capnp/rpc.capnp) from local Client objects being destroyed so
+    // the remote side can free resources and shut down cleanly. Without this,
+    // when one side of a socket pair is closed the other side may not receive
+    // these messages, preventing the remote side from freeing ProxyServer
+    // resources and shutting down cleanly.
+    // Use kj::runCatchingExceptions instead of try/catch because on macOS with
+    // dynamic libraries, kj::Exception typeinfo differs between libcapnp and
+    // the calling binary, so catch (const kj::Exception&) silently fails to
+    // match. kj::runCatchingExceptions uses KJ's own interception mechanism
+    // which works correctly across dynamic library boundaries.
+    KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&]() {
+        m_stream->shutdownWrite();
+    })) {
+        // Ignore ENOTCONN: on macOS/FreeBSD (unlike Linux), shutdown(SHUT_WR)
+        // returns ENOTCONN if the peer already closed the connection. This is
+        // expected when the destructor is triggered by a remote disconnect.
+        // Also ignore UNIMPLEMENTED: shutdownWrite() may not be supported on
+        // all stream types (e.g. streams that do not support half-close).
+        if (exception->getType() != kj::Exception::Type::DISCONNECTED &&
+            exception->getType() != kj::Exception::Type::UNIMPLEMENTED) {
+            kj::throwRecoverableException(kj::mv(*exception));
+        }
+    }
 
     // ProxyClient cleanup handlers are in sync list, and ProxyServer cleanup
     // handlers are in the async list.
@@ -204,10 +256,14 @@ EventLoop::EventLoop(const char* exe_name, LogOptions log_opts, void* context)
       m_log_opts(std::move(log_opts)),
       m_context(context)
 {
-    int fds[2];
-    KJ_SYSCALL(socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
-    m_wait_fd = fds[0];
-    m_post_fd = fds[1];
+    auto pipe = m_io_context.provider->newTwoWayPipe();
+    m_wait_stream = kj::mv(pipe.ends[0]);
+    m_post_stream = kj::mv(pipe.ends[1]);
+    KJ_IF_MAYBE(fd, m_post_stream->getFd()) {
+        m_post_writer = kj::heap<kj::FdOutputStream>(*fd);
+    } else {
+        throw std::logic_error("Could not get file descriptor for new pipe.");
+    }
 }
 
 EventLoop::~EventLoop()
@@ -216,9 +272,9 @@ EventLoop::~EventLoop()
     const Lock lock(m_mutex);
     KJ_ASSERT(m_post_fn == nullptr);
     KJ_ASSERT(!m_async_fns);
-    KJ_ASSERT(m_wait_fd == -1);
-    KJ_ASSERT(m_post_fd == -1);
-    KJ_ASSERT(m_num_clients == 0);
+    KJ_ASSERT(!m_wait_stream);
+    KJ_ASSERT(!m_post_stream);
+    KJ_ASSERT(m_num_refs == 0);
 
     // Spin event loop. wait for any promises triggered by RPC shutdown.
     // auto cleanup = kj::evalLater([]{});
@@ -237,9 +293,7 @@ void EventLoop::loop()
         m_async_fns.emplace();
     }
 
-    kj::Own<kj::AsyncIoStream> wait_stream{
-        m_io_context.lowLevelProvider->wrapSocketFd(m_wait_fd, kj::LowLevelAsyncIoProvider::TAKE_OWNERSHIP)};
-    int post_fd{m_post_fd};
+    kj::Own<kj::AsyncIoStream>& wait_stream{m_wait_stream};
     char buffer = 0;
     for (;;) {
         const size_t read_bytes = wait_stream->read(&buffer, 0, 1).wait(m_io_context.waitScope);
@@ -256,7 +310,7 @@ void EventLoop::loop()
             m_cv.notify_all();
         } else if (done()) {
             // Intentionally do not break if m_post_fn was set, even if done()
-            // would return true, to ensure that the EventLoopRef write(post_fd)
+            // would return true, to ensure that the post() m_post_writer->write()
             // call always succeeds and the loop does not exit between the time
             // that the done condition is set and the write call is made.
             break;
@@ -266,10 +320,10 @@ void EventLoop::loop()
     m_task_set.reset();
     MP_LOG(*this, Log::Info) << "EventLoop::loop bye.";
     wait_stream = nullptr;
-    KJ_SYSCALL(::close(post_fd));
     const Lock lock(m_mutex);
-    m_wait_fd = -1;
-    m_post_fd = -1;
+    m_post_writer = nullptr;
+    m_wait_stream = nullptr;
+    m_post_stream = nullptr;
     m_async_fns.reset();
     m_cv.notify_all();
 }
@@ -284,10 +338,9 @@ void EventLoop::post(kj::Function<void()> fn)
     EventLoopRef ref(*this, &lock);
     m_cv.wait(lock.m_lock, [this]() MP_REQUIRES(m_mutex) { return m_post_fn == nullptr; });
     m_post_fn = &fn;
-    int post_fd{m_post_fd};
     Unlock(lock, [&] {
         char buffer = 0;
-        KJ_SYSCALL(write(post_fd, &buffer, 1));
+        m_post_writer->write(&buffer, 1);
     });
     m_cv.wait(lock.m_lock, [this, &fn]() MP_REQUIRES(m_mutex) { return m_post_fn != &fn; });
 }
@@ -320,8 +373,8 @@ void EventLoop::startAsyncThread()
 
 bool EventLoop::done() const
 {
-    assert(m_num_clients >= 0);
-    return m_num_clients == 0 && m_async_fns->empty();
+    assert(m_num_refs >= 0);
+    return m_num_refs == 0 && m_async_fns->empty();
 }
 
 std::tuple<ConnThread, bool> SetThread(GuardedRef<ConnThreads> threads, Connection* connection, const std::function<Thread::Client()>& make_thread)
@@ -414,6 +467,29 @@ kj::Promise<void> ProxyServer<Thread>::getName(GetNameContext context)
 }
 
 ProxyServer<ThreadMap>::ProxyServer(Connection& connection) : m_connection(connection) {}
+
+kj::Promise<void> ProxyServer<ThreadMap>::makePool(MakePoolContext context)
+{
+    if (!m_connection.m_thread_pool.empty()) {
+        throw std::runtime_error("makePool called on connection with existing pool");
+    }
+    EventLoop& loop{*m_connection.m_loop};
+    const uint32_t count = context.getParams().getCount();
+    for (uint32_t i = 0; i < count; ++i) {
+        const std::string thread_name = "pool/" + std::to_string(i);
+        std::promise<ThreadContext*> thread_context;
+        std::thread thread([&loop, &thread_context, thread_name]() {
+            g_thread_context.thread_name = ThreadName(loop.m_exe_name) + " (" + thread_name + ")";
+            g_thread_context.waiter = std::make_unique<Waiter>();
+            Lock lock(g_thread_context.waiter->m_mutex);
+            thread_context.set_value(&g_thread_context);
+            g_thread_context.waiter->wait(lock, [] { return !g_thread_context.waiter; });
+        });
+        auto thread_server = kj::heap<ProxyServer<Thread>>(m_connection, *thread_context.get_future().get(), std::move(thread));
+        m_connection.m_thread_pool.push_back({m_connection.m_threads.add(kj::mv(thread_server))});
+    }
+    return kj::READY_NOW;
+}
 
 kj::Promise<void> ProxyServer<ThreadMap>::makeThread(MakeThreadContext context)
 {

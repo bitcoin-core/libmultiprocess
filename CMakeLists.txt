@@ -2,7 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-cmake_minimum_required(VERSION 3.12)
+cmake_minimum_required(VERSION 3.22)
 
 project("Libmultiprocess" CXX)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
@@ -13,7 +13,7 @@ endif()
 include("cmake/compat_find.cmake")
 
 find_package(Threads REQUIRED)
-find_package(CapnProto 0.7 QUIET NO_MODULE)
+find_package(CapnProto 0.9 QUIET NO_MODULE)
  if(NOT CapnProto_FOUND)
    message(FATAL_ERROR
      "Cap'n Proto is required but was not found.\n"

@@ -13,9 +13,12 @@
 #include <capnp/rpc-twoparty.h>
 
 #include <assert.h>
+#include <algorithm>
 #include <condition_variable>
+#include <cstdlib>
 #include <functional>
 #include <kj/function.h>
+#include <kj/io.h>
 #include <map>
 #include <memory>
 #include <optional>
@@ -25,6 +28,7 @@
 
 namespace mp {
 struct ThreadContext;
+struct Listener;
 
 struct InvokeContext
 {
@@ -210,6 +214,9 @@ private:
 
 std::string LongThreadName(const char* exe_name);
 
+//! Wrap a socket file descriptor as an async stream, taking ownership of the fd.
+Stream MakeStream(EventLoop&loop, SocketId socket);
+
 //! Event loop implementation.
 //!
 //! Cap'n Proto threading model is very simple: all I/O operations are
@@ -255,7 +262,7 @@ public:
 
     //! Run event loop. Does not return until shutdown. This should only be
     //! called once from the m_thread_id thread. This will block until
-    //! the m_num_clients reference count is 0.
+    //! the m_num_refs reference count is 0.
     void loop();
 
     //! Run function on event loop thread. Does not return until function completes.
@@ -308,15 +315,20 @@ public:
     //! Callback functions to run on async thread.
     std::optional<CleanupList> m_async_fns MP_GUARDED_BY(m_mutex);
 
-    //! Pipe read handle used to wake up the event loop thread.
-    int m_wait_fd = -1;
+    //! Socket pair used to post and wait for wakeups to the event loop thread.
+    kj::Own<kj::AsyncIoStream> m_wait_stream;
+    kj::Own<kj::AsyncIoStream> m_post_stream;
 
-    //! Pipe write handle used to wake up the event loop thread.
-    int m_post_fd = -1;
+    //! Synchronous writer used to write to m_post_stream.
+    kj::Own<kj::OutputStream> m_post_writer;
 
-    //! Number of clients holding references to ProxyServerBase objects that
-    //! reference this event loop.
-    int m_num_clients MP_GUARDED_BY(m_mutex) = 0;
+    //! Number of EventLoopRef instances referencing this event loop. This is a
+    //! sum of the number of client and server objects (Connection, ProxyClient,
+    //! ProxyServer) using the loop, plus temporary references held while
+    //! posting functions to the loop, plus any references held by external code
+    //! to keep the loop running. The loop() method exits when this count drops
+    //! to 0 (and m_async_fns is empty).
+    int m_num_refs MP_GUARDED_BY(m_mutex) = 0;
 
     //! Mutex and condition variable used to post tasks to event loop and async
     //! thread.
@@ -356,6 +368,12 @@ public:
 
     //! Hook called on the worker thread just before returning results.
     std::function<void()> testing_hook_async_request_done;
+
+    //! Hook called on the event loop thread when a client has connected.
+    std::function<void()> testing_hook_connected;
+
+    //! Hook called on the event loop thread when a client has disconnected.
+    std::function<void()> testing_hook_disconnected;
 };
 
 //! Single element task queue used to handle recursive capnp calls. (If the
@@ -438,7 +456,7 @@ public:
     //! Capability::Client handles owned by ProxyClient objects), then schedules
     //! asynchronous cleanup functions to run in a worker thread (to run
     //! destructors of m_impl instances owned by ProxyServer objects).
-    ~Connection();
+    ~Connection() noexcept(false);
 
     //! Register synchronous cleanup function to run on event loop thread (with
     //! access to capnp thread local variables) when disconnect() is called.
@@ -476,6 +494,13 @@ public:
     //! Collection of server-side IPC worker threads (ProxyServer<Thread> objects previously returned by
     //! ThreadMap.makeThread) used to service requests to clients.
     ::capnp::CapabilityServerSet<Thread> m_threads;
+
+    //! A thread created by makePool with associated pending work queue. Vector is filled once by makePool() and never resized.
+    struct PoolSlot {
+        Thread::Client client;
+        size_t depth{0};
+    };
+    std::vector<PoolSlot> m_thread_pool;
 
     //! Canceler for canceling promises that we want to discard when the
     //! connection is destroyed. This is used to interrupt method calls that are
@@ -804,17 +829,15 @@ kj::Promise<T> ProxyServer<Thread>::post(Fn&& fn)
     return ret;
 }
 
-//! Given stream file descriptor, make a new ProxyClient object to send requests
-//! over the stream. Also create a new Connection object embedded in the
-//! client that is freed when the client is closed.
+//! Given a stream, make a new ProxyClient object to send requests over it.
+//! Also create a new Connection object embedded in the client that is freed
+//! when the client is closed.
 template <typename InitInterface>
-std::unique_ptr<ProxyClient<InitInterface>> ConnectStream(EventLoop& loop, int fd)
+std::unique_ptr<ProxyClient<InitInterface>> ConnectStream(EventLoop& loop, Stream stream)
 {
     typename InitInterface::Client init_client(nullptr);
     std::unique_ptr<Connection> connection;
     loop.sync([&] {
-        auto stream =
-            loop.m_io_context.lowLevelProvider->wrapSocketFd(fd, kj::LowLevelAsyncIoProvider::TAKE_OWNERSHIP);
         connection = std::make_unique<Connection>(loop, kj::mv(stream));
         init_client = connection->m_rpc_system->bootstrap(ServerVatId().vat_id).castAs<InitInterface>();
         Connection* connection_ptr = connection.get();
@@ -831,8 +854,8 @@ std::unique_ptr<ProxyClient<InitInterface>> ConnectStream(EventLoop& loop, int f
 //! handles requests from the stream by calling the init object. Embed the
 //! ProxyServer in a Connection object that is stored and erased if
 //! disconnected. This should be called from the event loop thread.
-template <typename InitInterface, typename InitImpl>
-void _Serve(EventLoop& loop, kj::Own<kj::AsyncIoStream>&& stream, InitImpl& init)
+template <typename InitInterface, typename InitImpl, typename OnDisconnect>
+void _Serve(EventLoop& loop, kj::Own<kj::AsyncIoStream>&& stream, InitImpl& init, OnDisconnect&& on_disconnect)
 {
     loop.m_incoming_connections.emplace_front(loop, kj::mv(stream), [&](Connection& connection) {
         // Disable deleter so proxy server object doesn't attempt to delete the
@@ -842,44 +865,67 @@ void _Serve(EventLoop& loop, kj::Own<kj::AsyncIoStream>&& stream, InitImpl& init
     });
     auto it = loop.m_incoming_connections.begin();
     MP_LOG(loop, Log::Info) << "IPC server: socket connected.";
-    it->onDisconnect([&loop, it] {
+    if (loop.testing_hook_connected) loop.testing_hook_connected();
+    it->onDisconnect([&loop, it, on_disconnect = std::forward<OnDisconnect>(on_disconnect)]() mutable {
         MP_LOG(loop, Log::Info) << "IPC server: socket disconnected.";
         loop.m_incoming_connections.erase(it);
+        on_disconnect();
+        if (loop.testing_hook_disconnected) loop.testing_hook_disconnected();
     });
 }
 
-//! Given connection receiver and an init object, handle incoming connections by
-//! calling _Serve, to create ProxyServer objects and forward requests to the
-//! init object.
-template <typename InitInterface, typename InitImpl>
-void _Listen(EventLoop& loop, kj::Own<kj::ConnectionReceiver>&& listener, InitImpl& init)
+struct Listener
 {
-    auto* ptr = listener.get();
-    loop.m_task_set->add(ptr->accept().then(
-        [&loop, &init, listener = kj::mv(listener)](kj::Own<kj::AsyncIoStream>&& stream) mutable {
-            _Serve<InitInterface>(loop, kj::mv(stream), init);
-            _Listen<InitInterface>(loop, kj::mv(listener), init);
+    explicit Listener(kj::Own<kj::ConnectionReceiver>&& receiver, std::optional<size_t> max_connections)
+        : m_receiver(kj::mv(receiver)), m_max_connections(max_connections) {}
+
+    bool atCapacity() const
+    {
+        return m_max_connections && m_active_connections >= *m_max_connections;
+    }
+
+    kj::Own<kj::ConnectionReceiver> m_receiver;
+    std::optional<size_t> m_max_connections;
+    size_t m_active_connections{0};
+};
+
+template <typename InitInterface, typename InitImpl>
+void _Listen(const std::shared_ptr<Listener>& listener, EventLoop& loop, InitImpl& init)
+{
+    if (listener->atCapacity()) return;
+
+    auto* receiver = listener->m_receiver.get();
+    loop.m_task_set->add(receiver->accept().then(
+        [&loop, &init, listener](kj::Own<kj::AsyncIoStream>&& stream) {
+            ++listener->m_active_connections;
+            _Serve<InitInterface>(loop, kj::mv(stream), init, [&loop, &init, listener] {
+                const bool resume_accept{listener->atCapacity()};
+                assert(listener->m_active_connections > 0);
+                --listener->m_active_connections;
+                if (resume_accept) _Listen<InitInterface>(listener, loop, init);
+            });
+            _Listen<InitInterface>(listener, loop, init);
         }));
 }
 
-//! Given stream file descriptor and an init object, handle requests on the
-//! stream by calling methods on the Init object.
+//! Given a stream and an init object, handle requests on the stream by calling
+//! methods on the Init object.
 template <typename InitInterface, typename InitImpl>
-void ServeStream(EventLoop& loop, int fd, InitImpl& init)
+void ServeStream(EventLoop& loop, Stream stream, InitImpl& init)
 {
-    _Serve<InitInterface>(
-        loop, loop.m_io_context.lowLevelProvider->wrapSocketFd(fd, kj::LowLevelAsyncIoProvider::TAKE_OWNERSHIP), init);
+    _Serve<InitInterface>(loop, kj::mv(stream), init, [] {});
 }
 
-//! Given listening socket file descriptor and an init object, handle incoming
+//! Given listening socket identifier and an init object, handle incoming
 //! connections and requests by calling methods on the Init object.
 template <typename InitInterface, typename InitImpl>
-void ListenConnections(EventLoop& loop, int fd, InitImpl& init)
+void ListenConnections(EventLoop& loop, SocketId fd, InitImpl& init, std::optional<size_t> max_connections = std::nullopt)
 {
     loop.sync([&]() {
-        _Listen<InitInterface>(loop,
+        auto listener{std::make_shared<Listener>(
             loop.m_io_context.lowLevelProvider->wrapListenSocketFd(fd, kj::LowLevelAsyncIoProvider::TAKE_OWNERSHIP),
-            init);
+            max_connections)};
+        _Listen<InitInterface>(listener, loop, init);
     });
 }
 
