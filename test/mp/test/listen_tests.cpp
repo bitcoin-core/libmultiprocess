@@ -8,6 +8,7 @@
 #include <mp/test/foo.capnp.proxy.h>
 
 #include <chrono>
+#include <compare>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
@@ -129,18 +130,23 @@ public:
     std::thread thread;
 };
 
+//! Default server event loop log handler, throws so tests can assert on errors.
+void DefaultLogHandler(mp::LogMessage log)
+{
+    KJ_LOG(INFO, log.level, log.message);
+    if (log.level == mp::Log::Raise) throw std::runtime_error(log.message);
+}
+
 //! Runs a server EventLoop on its own thread, starts ListenConnections() on a
 //! UnixListener socket, and records connection/disconnection counts through
 //! EventLoop test hooks
 class ListenSetup
 {
 public:
-    explicit ListenSetup(std::optional<size_t> max_connections = std::nullopt)
-        : thread([this, max_connections] {
-              EventLoop loop("mptest-server", [](mp::LogMessage log) {
-                  KJ_LOG(INFO, log.level, log.message);
-                  if (log.level == mp::Log::Raise) throw std::runtime_error(log.message);
-              });
+    explicit ListenSetup(std::optional<size_t> max_connections = std::nullopt,
+                         mp::LogFn log_handler = DefaultLogHandler)
+        : thread([this, max_connections, log_handler] {
+              EventLoop loop("mptest-server", log_handler);
               loop.testing_hook_disconnected = [&] {
                   Lock lock(counter_mutex);
                   ++disconnected_count;
@@ -287,6 +293,38 @@ KJ_TEST("ListenConnections accepts multiple connections")
     server.WaitForConnectedCount(3);
 
     KJ_EXPECT(client3->client->add(3, 4) == 7);
+}
+
+KJ_TEST("ListenConnections handles a client that disconnects before being accepted")
+{
+    Mutex mutex;
+    bool accept_error = false;
+    ListenSetup server(std::nullopt, [&](mp::LogMessage log) {
+        // On macOS, accept() can fail if the peer closes the connection before it is accepted.
+        // The event loop then reports this as an uncaught task exception. We catch and ignore
+        // this specific error here so that the corresponding CI job does not fail.
+        //
+        // This is a Cap'n Proto bug, a fix is available in the v2 branch at: https://github.com/capnproto/capnproto/commit/7df5bd078f389ded313479981bd0ae06cbcdfe1b#diff-ec577ad66535f58f6d7396ea51d3e56c0065308aa8fb02751cd6a8cfaa67252fR1358-R1372
+        if (log.level == mp::Log::Error && log.message.find("Uncaught exception in daemonized task.") != std::string::npos) {
+            Lock lock(mutex);
+            accept_error = true;
+        }
+        DefaultLogHandler(log);
+    });
+
+    // This is racy, if the close does not happen before accept(),
+    // the connection is accepted normally.
+    int fd = server.listener.MakeConnectedSocket();
+    KJ_SYSCALL(close(fd));
+
+    // Wait for the connection to either be accepted and disconnected, or fail
+    // to be accepted and log the error above.
+    const auto deadline = std::chrono::steady_clock::now() + FAILURE_TIMEOUT;
+    auto accept_error_seen = [&] { Lock lock(mutex); return accept_error; };
+    while (!accept_error_seen() && server.DisconnectedCount() < 1 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    KJ_EXPECT(accept_error_seen() || server.DisconnectedCount() >= 1);
 }
 
 } // namespace
