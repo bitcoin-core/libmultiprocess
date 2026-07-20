@@ -129,18 +129,23 @@ public:
     std::thread thread;
 };
 
+//! Default server event loop log handler, throws so tests can assert on errors.
+void DefaultLogHandler(mp::LogMessage log)
+{
+    KJ_LOG(INFO, log.level, log.message);
+    if (log.level == mp::Log::Raise) throw std::runtime_error(log.message);
+}
+
 //! Runs a server EventLoop on its own thread, starts ListenConnections() on a
 //! UnixListener socket, and records connection/disconnection counts through
 //! EventLoop test hooks
 class ListenSetup
 {
 public:
-    explicit ListenSetup(std::optional<size_t> max_connections = std::nullopt)
-        : thread([this, max_connections] {
-              EventLoop loop("mptest-server", [](mp::LogMessage log) {
-                  KJ_LOG(INFO, log.level, log.message);
-                  if (log.level == mp::Log::Raise) throw std::runtime_error(log.message);
-              });
+    explicit ListenSetup(std::optional<size_t> max_connections = std::nullopt,
+                         mp::LogFn log_handler = DefaultLogHandler)
+        : thread([this, max_connections, log_handler] {
+              EventLoop loop("mptest-server", log_handler);
               loop.testing_hook_disconnected = [&] {
                   Lock lock(counter_mutex);
                   ++disconnected_count;
