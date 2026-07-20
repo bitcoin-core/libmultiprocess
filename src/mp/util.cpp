@@ -142,11 +142,6 @@ std::tuple<ProcessId, SocketId> SpawnProcess(SpawnConnectInfoToArgsFn&& connect_
     const std::vector<std::string> args{connect_info_to_args(std::to_string(fds[0]))};
     const std::vector<char*> argv{MakeArgv(args)};
 
-    // Clear FD_CLOEXEC on fds[0] before forking so it survives exec in the child.
-    int fds0_flags;
-    KJ_SYSCALL(fds0_flags = fcntl(fds[0], F_GETFD));
-    KJ_SYSCALL(fcntl(fds[0], F_SETFD, fds0_flags & ~FD_CLOEXEC));
-
     ProcessId pid = fork();
     if (pid == -1) {
         throw std::system_error(errno, std::system_category(), "fork");
@@ -170,6 +165,16 @@ std::tuple<ProcessId, SocketId> SpawnProcess(SpawnConnectInfoToArgsFn&& connect_
             if (fd != fds[0]) {
                 close(fd);
             }
+        }
+
+        // Clear FD_CLOEXEC on socket 0 so it survives exec. Doing this here
+        // rather than in the parent before forking avoids a window where a
+        // concurrent fork in another thread would leak the descriptor into an
+        // unrelated child process (which would not clear it).
+        // fcntl is async-signal-safe.
+        const int fds0_flags = fcntl(fds[0], F_GETFD);
+        if (fds0_flags == -1 || fcntl(fds[0], F_SETFD, fds0_flags & ~FD_CLOEXEC) == -1) {
+            ChildFail("SpawnProcess(child): clearing FD_CLOEXEC failed\n");
         }
 
         execvp(argv[0], argv.data());
