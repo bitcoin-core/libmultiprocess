@@ -117,9 +117,45 @@ std::string LogEscape(const kj::StringTree& string, size_t max_size)
     return result;
 }
 
+enum class SpawnErrorOp
+{
+    CLOSE,
+    EXECVP,
+    READ,
+};
+
+struct SpawnError {
+    SpawnErrorOp which;
+    int err;
+};
+
+const char* SpawnErrorName(SpawnErrorOp which)
+{
+    switch (which) {
+    case SpawnErrorOp::CLOSE: return "close";
+    case SpawnErrorOp::EXECVP: return "execvp";
+    case SpawnErrorOp::READ: return "read";
+    }
+    return "unknown";
+}
+
+SpawnError ReadSpawnResult(int fd)
+{
+    SpawnError error{};
+    ssize_t readResult;
+    do {
+        readResult = ::read(fd, &error, sizeof(error));
+    } while (readResult < 0 && errno == EINTR);
+    if (readResult < 0) {
+        return SpawnError{.which = SpawnErrorOp::READ, .err = errno};
+    }
+    return error;
+}
+
 std::tuple<ProcessId, SocketId> SpawnProcess(SpawnConnectInfoToArgsFn&& connect_info_to_args)
 {
     auto fds{SocketPair()};
+    auto error_fds{SocketPair()};
 
     // Evaluate the callback and build the argv array before forking.
     //
@@ -137,39 +173,62 @@ std::tuple<ProcessId, SocketId> SpawnProcess(SpawnConnectInfoToArgsFn&& connect_
 
     ProcessId pid = fork();
     if (pid == -1) {
-        throw std::system_error(errno, std::system_category(), "fork");
+        const int err = errno;
+        (void)close(fds[0]);
+        (void)close(fds[1]);
+        (void)close(error_fds[0]);
+        (void)close(error_fds[1]);
+        throw std::system_error(err, std::system_category(), "fork");
     }
     // Parent process closes the descriptor for socket 0, child closes the
     // descriptor for socket 1. On failure, the parent throws, but the child
     // must _exit(126) (post-fork child must not throw).
     if (close(fds[pid ? 0 : 1]) != 0) {
+        const int err = errno;
         if (pid) {
             (void)close(fds[1]);
-            throw std::system_error(errno, std::system_category(), "close");
+            (void)close(error_fds[0]);
+            (void)close(error_fds[1]);
+            throw std::system_error(err, std::system_category(), "close");
         }
-        static constexpr char msg[] = "SpawnProcess(child): close(fds[1]) failed\n";
-        const ssize_t writeResult = ::write(STDERR_FILENO, msg, sizeof(msg) - 1);
+        SpawnError error{.which = SpawnErrorOp::CLOSE, .err = err};
+        const ssize_t writeResult = ::write(error_fds[0], &error, sizeof(error));
         (void)writeResult;
         _exit(126);
     }
 
     if (!pid) {
         // Child process must close all potentially open descriptors, except
-        // socket 0. Do not throw, allocate, or do non-fork-safe work here.
+        // socket 0 and the error-reporting socket 0. Do not throw, allocate, or
+        // do non-fork-safe work here.
         const int maxFd = MaxFd();
         for (int fd = 3; fd < maxFd; ++fd) {
-            if (fd != fds[0]) {
+            if (fd != fds[0] && fd != error_fds[0]) {
                 close(fd);
             }
         }
 
         execvp(argv[0], argv.data());
-        // NOTE: perror() is not async-signal-safe; calling it here in a
-        // post-fork child may deadlock in multithreaded parents.
-        // TODO: Report errors to the parent via a pipe (e.g. write errno)
-        // so callers can get diagnostics without relying on perror().
-        perror("execvp failed");
+
+        SpawnError error{.which = SpawnErrorOp::EXECVP, .err = errno};
+        const ssize_t writeResult = ::write(error_fds[0], &error, sizeof(error));
+        (void)writeResult;
         _exit(127);
+    }
+
+    // Close the parent's copy of the child's write end.
+    if (close(error_fds[0]) != 0) {
+        const int err = errno;
+        (void)close(error_fds[1]);
+        (void)close(fds[1]);
+        throw std::system_error(err, std::system_category(), "close");
+    }
+
+    const SpawnError error{ReadSpawnResult(error_fds[1])};
+    (void)close(error_fds[1]);
+    if (error.err) {
+        (void)close(fds[1]);
+        throw std::system_error(error.err, std::system_category(), SpawnErrorName(error.which));
     }
     return {pid, fds[1]};
 }
