@@ -117,24 +117,39 @@ std::string LogEscape(const kj::StringTree& string, size_t max_size)
     return result;
 }
 
-enum class ChildErrorOp
+enum class SpawnErrorOp
 {
     CLOSE,
     EXECVP,
+    READ,
 };
 
-struct ChildError {
-    ChildErrorOp which;
+struct SpawnError {
+    SpawnErrorOp which;
     int err;
 };
 
-const char* ChildErrorName(ChildErrorOp which)
+const char* SpawnErrorName(SpawnErrorOp which)
 {
     switch (which) {
-    case ChildErrorOp::CLOSE: return "close";
-    case ChildErrorOp::EXECVP: return "execvp";
+    case SpawnErrorOp::CLOSE: return "close";
+    case SpawnErrorOp::EXECVP: return "execvp";
+    case SpawnErrorOp::READ: return "read";
     }
     return "unknown";
+}
+
+SpawnError ReadSpawnResult(int fd)
+{
+    SpawnError error{};
+    ssize_t readResult;
+    do {
+        readResult = ::read(fd, &error, sizeof(error));
+    } while (readResult < 0 && errno == EINTR);
+    if (readResult < 0) {
+        return SpawnError{.which = SpawnErrorOp::READ, .err = errno};
+    }
+    return error;
 }
 
 std::tuple<ProcessId, SocketId> SpawnProcess(SpawnConnectInfoToArgsFn&& connect_info_to_args)
@@ -176,7 +191,7 @@ std::tuple<ProcessId, SocketId> SpawnProcess(SpawnConnectInfoToArgsFn&& connect_
             (void)close(error_fds[1]);
             throw std::system_error(err, std::system_category(), "close");
         }
-        ChildError error{.which = ChildErrorOp::CLOSE, .err = err};
+        SpawnError error{.which = SpawnErrorOp::CLOSE, .err = err};
         const ssize_t writeResult = ::write(error_fds[0], &error, sizeof(error));
         (void)writeResult;
         _exit(126);
@@ -195,7 +210,7 @@ std::tuple<ProcessId, SocketId> SpawnProcess(SpawnConnectInfoToArgsFn&& connect_
 
         execvp(argv[0], argv.data());
 
-        ChildError error{.which = ChildErrorOp::EXECVP, .err = errno};
+        SpawnError error{.which = SpawnErrorOp::EXECVP, .err = errno};
         const ssize_t writeResult = ::write(error_fds[0], &error, sizeof(error));
         (void)writeResult;
         _exit(127);
@@ -209,21 +224,11 @@ std::tuple<ProcessId, SocketId> SpawnProcess(SpawnConnectInfoToArgsFn&& connect_
         throw std::system_error(err, std::system_category(), "close");
     }
 
-    ChildError error{};
-    ssize_t readResult;
-    do {
-        readResult = ::read(error_fds[1], &error, sizeof(error));
-    } while (readResult < 0 && errno == EINTR);
+    const SpawnError error{ReadSpawnResult(error_fds[1])};
     (void)close(error_fds[1]);
-    if (readResult < 0) {
+    if (error.err) {
         (void)close(fds[1]);
-        throw std::system_error(errno, std::system_category(), "read");
-    }
-    if (readResult > 0 && error.err) {
-        (void)close(fds[1]);
-        // Wait it here to avoid leaking a zombie process and then throw.
-        (void)::waitpid(pid, nullptr, 0);
-        throw std::system_error(error.err, std::system_category(), ChildErrorName(error.which));
+        throw std::system_error(error.err, std::system_category(), SpawnErrorName(error.which));
     }
     return {pid, fds[1]};
 }
