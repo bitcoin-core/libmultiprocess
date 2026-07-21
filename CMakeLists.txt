@@ -8,6 +8,11 @@ project("Libmultiprocess" CXX)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(CMAKE_CXX_STANDARD 20)
   set(CMAKE_CXX_STANDARD_REQUIRED YES)
+  # Export compile_commands.json for clangd and other tooling, unless the
+  # -D option or environment variable was set explicitly (empty means unset).
+  if("${CMAKE_EXPORT_COMPILE_COMMANDS}" STREQUAL "")
+    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+  endif()
 endif()
 
 include("cmake/compat_find.cmake")

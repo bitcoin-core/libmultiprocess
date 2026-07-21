@@ -1,0 +1,6 @@
+# Point clangd at the compile database in the build directory suggested by
+# doc/install.md. clangd only searches ancestor directories by default, so
+# without this a symlink to compile_commands.json would be needed in the
+# source directory.
+CompileFlags:
+  CompilationDatabase: build
