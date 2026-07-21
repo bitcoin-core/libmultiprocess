@@ -10,7 +10,6 @@
 #include <fstream>
 #include <future>
 #include <iostream>
-#include <kj/async.h>
 #include <kj/common.h>
 #include <memory>
 #include <mp/proxy-io.h>

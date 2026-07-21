@@ -39,6 +39,10 @@ interface FooInterface $Proxy.wrap("mp::test::FooImplementation") {
     passDataPointers @22 (arg :List(Data)) -> (result :List(Data));
 }
 
+interface FooInit $Proxy.wrap("mp::test::FooInit") {
+    construct @0 (threadMap: Proxy.ThreadMap) -> (threadMap :Proxy.ThreadMap);
+}
+
 interface FooCallback $Proxy.wrap("mp::test::FooCallback") {
     destroy @0 (context :Proxy.Context) -> ();
     call @1 (context :Proxy.Context, arg :Int32) -> (result :Int32);

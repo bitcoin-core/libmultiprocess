@@ -2,14 +2,12 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <cassert>
-#include <filesystem>
+#include "unixlistener.h"
 #include <mp/test/foo.capnp.h>
 #include <mp/test/foo.capnp.proxy.h>
 
 #include <chrono>
 #include <condition_variable>
-#include <cstdlib>
 #include <cstring>
 #include <future>
 #include <functional>
@@ -25,76 +23,13 @@
 #include <ratio> // IWYU pragma: keep
 #include <optional>
 #include <stdexcept>
-#include <string>
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <thread>
-#include <unistd.h>
 
 namespace mp {
 namespace test {
 namespace {
 
 constexpr auto FAILURE_TIMEOUT = std::chrono::seconds{30};
-
-//! Owns a temporary Unix-domain listening socket used by ListenSetup. Tests call
-//! Connect() to create client socket FDs and release() to transfer the listening
-//! FD to ListenConnections().
-class UnixListener
-{
-public:
-    UnixListener()
-    {
-        std::string dir_template = (std::filesystem::temp_directory_path() / "mptest-listener-XXXXXX").string();
-        char* dir = mkdtemp(dir_template.data());
-        KJ_REQUIRE(dir != nullptr);
-        m_dir = dir;
-        m_path = m_dir + "/socket";
-
-        m_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-        KJ_REQUIRE(m_fd >= 0);
-
-        sockaddr_un addr{};
-        addr.sun_family = AF_UNIX;
-        KJ_REQUIRE(m_path.size() < sizeof(addr.sun_path));
-        std::strncpy(addr.sun_path, m_path.c_str(), sizeof(addr.sun_path) - 1);
-        KJ_REQUIRE(bind(m_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
-        KJ_REQUIRE(listen(m_fd, SOMAXCONN) == 0);
-    }
-
-    ~UnixListener()
-    {
-        if (m_fd >= 0) close(m_fd);
-        if (!m_path.empty()) unlink(m_path.c_str());
-        if (!m_dir.empty()) rmdir(m_dir.c_str());
-    }
-
-    int release()
-    {
-        assert(m_fd >= 0);
-        int fd = m_fd;
-        m_fd = -1;
-        return fd;
-    }
-
-    int MakeConnectedSocket() const
-    {
-        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-        KJ_REQUIRE(fd >= 0);
-
-        sockaddr_un addr{};
-        addr.sun_family = AF_UNIX;
-        KJ_REQUIRE(m_path.size() < sizeof(addr.sun_path));
-        std::strncpy(addr.sun_path, m_path.c_str(), sizeof(addr.sun_path) - 1);
-        KJ_REQUIRE(connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
-        return fd;
-    }
-
-private:
-    int m_fd{-1};
-    std::string m_dir;
-    std::string m_path;
-};
 
 //! Runs a client EventLoop on its own thread and connects one socket FD to the
 //! server. The constructed ProxyClient can be used by the test thread to make
