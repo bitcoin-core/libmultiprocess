@@ -44,7 +44,9 @@ inline void CleanupRun(CleanupList& fns) {
     }
 }
 
-//! Event loop smart pointer automatically managing m_num_refs.
+//! Event loop smart pointer automatically managing m_num_refs. Hold one
+//! reference to keep the loop running, once the last reference is released
+//! EventLoop::loop() will exit.
 //! If a lock pointer argument is passed, the specified lock will be used,
 //! otherwise EventLoop::m_mutex will be locked when needed.
 class EventLoopRef
