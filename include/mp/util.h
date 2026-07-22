@@ -29,6 +29,17 @@
 #include <memory>
 #endif
 
+#ifdef WIN32
+// WIN32_LEAN_AND_MEAN excludes commdlg.h which defines `#define INTERFACE
+// IPrintDialogServices` — this conflicts with capnp::Kind::INTERFACE used
+// in CAPNP_DECLARE_INTERFACE_HEADER. Must be defined before winsock2.h.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <winsock2.h>
+#endif
+
 namespace mp {
 
 //! Generic utility functions used by capnp code.
@@ -273,30 +284,43 @@ std::string LogEscape(const kj::StringTree& string, size_t max_size);
 
 using Stream = kj::Own<kj::AsyncIoStream>;
 
+#ifdef WIN32
+// On Windows, ProcessId is defined to be the local process HANDLE rather than
+// global process ID, because handles are more useful for controlling and
+// waiting for processes. It it possible to obtain the actual process ID from
+// handles by calling the GetProcessId API.
+using ProcessId = HANDLE;
+using SocketId = SOCKET;
+constexpr SocketId SocketError{INVALID_SOCKET};
+#else
 using ProcessId = int;
 using SocketId = int;
 constexpr SocketId SocketError{-1};
-
-//! Information about parent process passed to child process as a command-line
-//! argument. On unix this is the child socket fd number formatted as a string.
-using SpawnConnectInfo = std::string;
-
-//! Callback type used by SpawnProcess below.
-using SpawnConnectInfoToArgsFn = std::function<std::vector<std::string>(const SpawnConnectInfo&)>;
+#endif
 
 //! Spawn a new process that communicates with the current process over a socket
-//! pair. Calls connect_info_to_args callback with a connection string that
-//! needs to be passed to the child process, and executes the argv command line
-//! it returns. Returns child process id and socket id.
-std::tuple<ProcessId, SocketId> SpawnProcess(SpawnConnectInfoToArgsFn&& connect_info_to_args);
+//! pair. Calls spawn_argv callback with a connection string that needs to be
+//! passed to the child process, and executes the argv command line it returns.
+//! Returns child process id and socket id.
+//!
+//! The connection string is just a file descriptor number on unix. On windows,
+//! it is a path to a named pipe the parent process will write
+//! WSADuplicateSocket info to. In both cases, the child process can call
+//! StartSpawned to get a socket handle from the connection string.
+std::tuple<ProcessId, SocketId> SpawnProcess(const std::function<std::vector<std::string>(std::string)>& spawn_argv);
 
-//! Initialize spawned child process using the SpawnConnectInfo string passed to it,
-//! returning a socket id for communicating with the parent process.
-SocketId StartSpawned(const SpawnConnectInfo& connect_info);
+//! Initialize spawned child process. The connect_info argument is the
+//! connection string SpawnProcess generated in the parent process and passed
+//! to the child on its command line. Returns socket id for communicating with
+//! the parent process.
+SocketId StartSpawned(const std::string& connect_info);
 
 //! Create a socket pair that can be used to communicate within a process or
 //! between parent and child processes.
 std::array<SocketId, 2> SocketPair();
+
+//! Close a socket, throwing a KJ exception on failure.
+void CloseSocket(SocketId fd);
 
 //! Start a process and return its process id. Caller should call WaitProcess
 //! on the returned id.

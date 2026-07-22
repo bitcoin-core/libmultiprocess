@@ -9,21 +9,26 @@
 #include <chrono>
 #include <compare>
 #include <condition_variable>
-#include <csignal>
 #include <cstdlib>
+#include <functional>
 #include <mutex>
 #include <string>
-#include <sys/wait.h>
 #include <thread>
 #include <tuple>
-#include <unistd.h>
 #include <utility>
 #include <vector>
+
+#ifndef WIN32
+#include <csignal>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace mp {
 namespace test {
 namespace {
 
+#ifndef WIN32
 constexpr auto FAILURE_TIMEOUT = std::chrono::seconds{30};
 
 // Poll for child process exit using waitpid(..., WNOHANG) until the child exits
@@ -44,14 +49,19 @@ static bool WaitPidWithTimeout(ProcessId pid, std::chrono::milliseconds timeout,
     }
     return false;
 }
+#endif // !WIN32
 
 } // namespace
 
+#ifndef WIN32
 KJ_TEST("SpawnProcess does not run callback in child")
 {
     // This test is designed to fail deterministically if fd_to_args is invoked
     // in the post-fork child: a mutex held by another parent thread at fork
     // time appears locked forever in the child.
+    //
+    // This test is Unix-only: Windows uses CreateProcess (not fork), so the
+    // inherited-locked-mutex hazard does not apply there.
     std::mutex target_mutex;
     std::mutex control_mutex;
     std::condition_variable control_cv;
@@ -90,7 +100,7 @@ KJ_TEST("SpawnProcess does not run callback in child")
         control_cv.notify_one();
     });
 
-    const auto [pid, socket]{SpawnProcess([&](SpawnConnectInfo connect_info) -> std::vector<std::string> {
+    const auto [pid, socket]{SpawnProcess([&](std::string connect_info) -> std::vector<std::string> {
         // If this callback runs in the post-fork child, target_mutex appears
         // locked forever (the owning thread does not exist), so this deadlocks.
         std::lock_guard<std::mutex> g(target_mutex);
@@ -113,5 +123,6 @@ KJ_TEST("SpawnProcess does not run callback in child")
     KJ_EXPECT(exited, "Timeout waiting for child process to exit");
     KJ_EXPECT(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
+#endif // !WIN32
 } // namespace test
 } // namespace mp
