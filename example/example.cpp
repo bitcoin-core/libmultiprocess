@@ -13,6 +13,7 @@
 #include <kj/async.h>
 #include <kj/common.h>
 #include <memory>
+#include <mp/proxy.h>
 #include <mp/proxy-io.h>
 #include <mp/util.h>
 #include <stdexcept>
@@ -24,7 +25,7 @@
 
 namespace fs = std::filesystem;
 
-static auto Spawn(mp::EventLoop& loop, const std::string& process_argv0, const std::string& new_exe_name)
+static auto Spawn(const mp::EventLoopRef& loop_ref, const std::string& process_argv0, const std::string& new_exe_name)
 {
     const auto [pid, socket] = mp::SpawnProcess([&](mp::SpawnConnectInfo info) -> std::vector<std::string> {
         fs::path path = process_argv0;
@@ -32,6 +33,7 @@ static auto Spawn(mp::EventLoop& loop, const std::string& process_argv0, const s
         path.append(new_exe_name);
         return {path.string(), std::move(info)};
     });
+    mp::EventLoop& loop = *loop_ref;
     return std::make_tuple(mp::ConnectStream<InitInterface>(loop, mp::MakeStream(loop, socket)), pid);
 }
 
@@ -48,16 +50,16 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    std::promise<mp::EventLoop*> promise;
+    std::promise<mp::EventLoopRef> promise;
     std::thread loop_thread([&] {
         mp::EventLoop loop("mpexample", LogPrint);
-        promise.set_value(&loop);
+        promise.set_value(mp::EventLoopRef(loop));
         loop.loop();
     });
-    mp::EventLoop* loop = promise.get_future().get();
+    mp::EventLoopRef loop_ref = promise.get_future().get();
 
-    auto [printer_init, printer_pid] = Spawn(*loop, argv[0], "mpprinter");
-    auto [calc_init, calc_pid] = Spawn(*loop, argv[0], "mpcalculator");
+    auto [printer_init, printer_pid] = Spawn(loop_ref, argv[0], "mpprinter");
+    auto [calc_init, calc_pid] = Spawn(loop_ref, argv[0], "mpcalculator");
     auto calc = calc_init->makeCalculator(printer_init->makePrinter());
     while (true) {
         std::string eqn;
@@ -71,6 +73,7 @@ int main(int argc, char** argv)
     mp::WaitProcess(calc_pid);
     printer_init.reset();
     mp::WaitProcess(printer_pid);
+    loop_ref.reset();
     loop_thread.join();
     std::cout << "Bye!" << std::endl;
     return 0;
