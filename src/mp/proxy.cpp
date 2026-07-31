@@ -421,15 +421,24 @@ ProxyClient<Thread>::~ProxyClient()
     // connection is broken there is not a race between this thread trying to
     // remove the callback and the disconnect handler attempting to call it.
     m_context.loop->sync([&]() {
-        // Skip if the connection was disconnected while this thread waited
-        // for the event loop: Connection::disconnect() has already run and
-        // freed the cleanup list m_disconnect_cb points into, and the
-        // ProxyClientBase disconnect callback has nulled
-        // m_context.connection. (The SetThread callback resets
-        // m_disconnect_cb only when it finds this object in the thread
-        // map, so if ~ThreadContext took the entry first, m_disconnect_cb
-        // is still set here.)
-        if (m_disconnect_cb && m_context.connection) {
+        // Check connection->disconnected() in addition to m_disconnect_cb:
+        // if the connection was disconnected while this thread was waiting
+        // for the event loop, Connection::disconnect() has already run and
+        // freed every m_sync_cleanup_fns node, including the one
+        // m_disconnect_cb points at, so the iterator is dangling and must
+        // not be passed to cancelOnDisconnect. disconnect() runs to
+        // completion on the event loop thread without interleaving with
+        // this posted lambda, so disconnected() is true here exactly when
+        // the node has already been freed.
+        //
+        // m_disconnect_cb can be set here even though disconnect() freed
+        // the node: the SetThread callback only resets m_disconnect_cb when
+        // it still finds this object in the thread map (see SetThread); if
+        // ~ThreadContext extracted the map entry first, the callback
+        // returns early and leaves m_disconnect_cb set. Before this
+        // object's connection ownership was made shared, m_context.connection
+        // was nulled on disconnect and this check keyed off that instead.
+        if (m_disconnect_cb && !m_context.connection->disconnected()) {
             m_context.connection->cancelOnDisconnect(*m_disconnect_cb);
         }
     });
