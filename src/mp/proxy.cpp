@@ -110,7 +110,7 @@ Connection::Tracker Connection::disconnect()
     // m_network is reset at the end of teardown below, so treat it being null
     // as the "already disconnected" state: a second call (including the one
     // from the destructor) is a no-op.
-    if (!m_network) return m_server_objects;
+    if (!m_network) return makeTracker();
 
     // Severing the network below makes afterDisconnect handlers run on a later
     // event loop turn, the same way they do after a remote disconnect, and
@@ -211,7 +211,7 @@ Connection::Tracker Connection::disconnect()
     // references the stream.
     m_network.reset();
     m_stream = nullptr;
-    return m_server_objects;
+    return makeTracker();
 }
 
 CleanupIt Connection::onDisconnect(std::function<void()> fn)
