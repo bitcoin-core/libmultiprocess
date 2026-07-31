@@ -177,48 +177,26 @@ void Connection::disconnect()
         }
     }
 
-    // ProxyClient cleanup handlers are in sync list, and ProxyServer cleanup
-    // handlers are in the async list.
+    // Run cleanup functions registered with addSyncCleanup(). These remove
+    // this connection's ProxyClient<Thread> entries from per-thread connection
+    // maps (see SetThread). The removal must happen eagerly here rather than
+    // whenever the owning threads next touch their maps, because the owning
+    // threads might never touch them again, and surviving entries would hold
+    // this Connection object -- and through its EventLoopRef the event loop --
+    // alive indefinitely.
     //
-    // The ProxyClient cleanup handlers are synchronous because they are fast
-    // and don't do anything besides release capnp resources and reset state so
-    // future calls to client methods immediately throw exceptions instead of
-    // trying to communicate across the socket. The synchronous callbacks set
-    // ProxyClient capability pointers to null, so new method calls on client
-    // objects fail without triggering i/o or relying on event loop which may go
-    // out of scope or trigger obscure capnp i/o errors.
-    //
-    // The ProxyServer cleanup handlers call user defined destructors on the server
-    // object, which can run arbitrary blocking bitcoin code so they have to run
-    // asynchronously in a different thread. The asynchronous cleanup functions
-    // intentionally aren't started until after the synchronous cleanup
-    // functions run, so client objects are fully disconnected before bitcoin
-    // code in the destructors are run. This way if the bitcoin code tries to
-    // make client requests the requests will just fail immediately instead of
-    // sending i/o or accessing the event loop.
-    //
-    // The context where Connection objects are destroyed and this destructor is invoked
-    // is different depending on whether this is an outgoing connection being used
-    // to make an Init.makeX call() (e.g. Init.makeNode or Init.makeWalletClient) or an incoming
-    // connection implementing the Init interface and handling the Init.makeX() calls.
-    //
-    // Either way when a connection is closed, capnp behavior is to call all
-    // ProxyServer object destructors first, and then trigger an onDisconnect
-    // callback.
-    //
-    // On incoming side of the connection, the onDisconnect callback is written
-    // to delete the Connection object from the m_incoming_connections and call
-    // this destructor which calls Connection::disconnect.
-    //
-    // On the outgoing side, the Connection object is owned by top level client
-    // object client, which onDisconnect handler doesn't have ready access to,
-    // so onDisconnect handler just calls Connection::disconnect directly
-    // instead.
-    //
-    // Either way disconnect code runs in the event loop thread and called both
-    // on clean and unclean shutdowns. In unclean shutdown case when the
-    // connection is broken, sync and async cleanup lists will be filled with
-    // callbacks. In the clean shutdown case both lists will be empty.
+    // Other proxy objects associated with this connection do not need to be
+    // notified about the disconnect. Interface ProxyClient objects hold shared
+    // ownership of this Connection object, and their capability handles remain
+    // safe to hold and release after the disconnect (calls made through them
+    // just fail with "IPC client method called after disconnect" errors, see
+    // clientInvoke), so they are simply destroyed whenever the application
+    // code owning them gets around to it. ProxyServer objects that are not
+    // kept alive by in-flight calls are destroyed by the m_rpc_system.reset()
+    // call above; destructors of the m_impl objects they wrap can run
+    // arbitrary blocking application code, so ~ProxyServerBase schedules those
+    // on the EventLoop::m_async_fns worker thread instead of running them
+    // here, where they could deadlock the event loop thread.
     {
         Lock lock{m_loop->m_mutex};
         while (!m_sync_cleanup_fns.empty()) {
@@ -267,12 +245,11 @@ CleanupIt Connection::addSyncCleanup(std::function<void()> fn)
     const Lock lock(m_loop->m_mutex);
     // Add cleanup callbacks to the front of list, so sync cleanup functions run
     // in LIFO order. This is a good approach because sync cleanup functions are
-    // added as client objects are created, and it is natural to clean up
-    // objects in the reverse order they were created. In practice, however,
-    // order should not be significant because the cleanup callbacks run
-    // synchronously in a single batch when the connection is broken, and they
-    // only reset the connection pointers in the client objects without actually
-    // deleting the client objects.
+    // added as objects are created, and it is natural to clean up objects in
+    // the reverse order they were created. In practice, however, order should
+    // not be significant because the cleanup callbacks run synchronously in a
+    // single batch when the connection is disconnected, and each one just
+    // removes an independent map entry (see SetThread).
     return m_sync_cleanup_fns.emplace(m_sync_cleanup_fns.begin(), std::move(fn));
 }
 
@@ -447,18 +424,25 @@ std::tuple<ConnThread, bool> SetThread(GuardedRef<ConnThreads> threads, Connecti
     }
     if (inserted) {
         thread->second.emplace(make_thread(), connection, /* destroy_connection= */ false);
+        // Register a cleanup callback eagerly removing this entry from the map
+        // when the connection is disconnected. This cannot be left to the
+        // thread owning the map, which might never touch the map again; a
+        // surviving entry would hold the disconnected Connection object -- and
+        // through its EventLoopRef the event loop -- alive indefinitely. See
+        // Connection::disconnect.
         thread->second->m_disconnect_cb = connection->addSyncCleanup([threads, thread] {
             // Note: it is safe to use the `thread` iterator in this cleanup
             // function, because the iterator would only be invalid if the map entry
             // was removed, and if the map entry is removed the ProxyClient<Thread>
             // destructor unregisters the cleanup.
 
-            // Connection is being destroyed before thread client is, so reset
-            // thread client m_disconnect_cb member so thread client destructor does not
-            // try to unregister this callback after connection is destroyed.
+            // Connection is being disconnected before the thread client is
+            // destroyed, so reset the thread client m_disconnect_cb member so
+            // the thread client destructor does not try to unregister this
+            // callback after it has already run.
             thread->second->m_disconnect_cb.reset();
 
-            // Remove connection pointer about to be destroyed from the map
+            // Remove the entry for the disconnected connection from the map.
             const Lock lock(threads.mutex);
             threads.ref.erase(thread);
         });

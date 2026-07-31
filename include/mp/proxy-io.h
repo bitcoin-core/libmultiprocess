@@ -84,14 +84,16 @@ struct ProxyClient<Thread> : public ProxyClientBase<Thread, ::capnp::Void>
     ~ProxyClient();
 
     //! Reference to callback function that is run if there is a sudden
-    //! disconnect and the Connection object is destroyed before this
-    //! ProxyClient<Thread> object. The callback will destroy this object and
-    //! remove its entry from the thread's request_threads or callback_threads
-    //! map. It will also reset m_disconnect_cb so the destructor does not
-    //! access it. In the normal case where there is no sudden disconnect, the
-    //! destructor will unregister m_disconnect_cb so the callback is never run.
-    //! Since this variable is accessed from multiple threads, accesses should
-    //! be guarded with the associated Waiter::m_mutex.
+    //! disconnect and the Connection is disconnected before this
+    //! ProxyClient<Thread> object is destroyed. The callback will destroy this
+    //! object and remove its entry from the thread's request_threads or
+    //! callback_threads map (see SetThread, which explains why removal must
+    //! happen eagerly at disconnect time). It will also reset m_disconnect_cb
+    //! so the destructor does not access it. In the normal case where there is
+    //! no sudden disconnect, the destructor will unregister m_disconnect_cb so
+    //! the callback is never run. Since this variable is accessed from
+    //! multiple threads, accesses should be guarded with the associated
+    //! Waiter::m_mutex.
     std::optional<CleanupIt> m_disconnect_cb;
 };
 
@@ -591,9 +593,15 @@ public:
     //! executing on worker threads. May be called from any thread.
     size_t pendingServerObjects() const { return m_server_objects->count(); }
 
-    //! Register synchronous cleanup function to run on event loop thread (with
-    //! access to capnp thread local variables) when disconnect() is called.
-    //! any new i/o.
+    //! Register a cleanup function to run on the event loop thread when
+    //! disconnect() is called. The only current use is by SetThread, which
+    //! registers callbacks that eagerly remove this connection's entries from
+    //! per-thread connection maps (ProxyClient<Thread> objects owned by other
+    //! threads, see ThreadContext). Eager removal is required because the
+    //! owning threads may never touch their maps again, and a surviving entry
+    //! would hold this Connection object -- and through its EventLoopRef the
+    //! event loop -- alive indefinitely. Other proxy objects need no
+    //! disconnect notification, see Connection::disconnect.
     CleanupIt addSyncCleanup(std::function<void()> fn);
     void removeSyncCleanup(CleanupIt it);
 
@@ -649,9 +657,10 @@ public:
     //! still executing at time of disconnection.
     kj::Canceler m_canceler;
 
-    //! Cleanup functions to run if connection is broken unexpectedly.  List
-    //! will be empty if all ProxyClient are destroyed cleanly before the
-    //! connection is destroyed.
+    //! Cleanup functions to run when the connection is disconnected, removing
+    //! this connection's entries from per-thread connection maps. See
+    //! addSyncCleanup. List will be empty if all ProxyClient<Thread> objects
+    //! are destroyed cleanly before the connection is disconnected.
     CleanupList m_sync_cleanup_fns;
 
     //! Set once disconnect() has run. Only accessed on the event loop thread.
