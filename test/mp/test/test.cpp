@@ -95,30 +95,48 @@ public:
               });
               auto pipe = loop.m_io_context.provider->newTwoWayPipe();
 
-              auto server_connection =
-                  std::make_unique<Connection>(loop, kj::mv(pipe.ends[0]), [&](Connection& connection) {
-                      auto server_proxy = kj::heap<ProxyServer<messages::FooInterface>>(
-                          std::make_shared<FooImplementation>(), connection);
-                      server = server_proxy;
-                      return capnp::Capability::Client(kj::mv(server_proxy));
-                  });
-              server_disconnect = [&] { loop.sync([&] { server_connection.reset(); }); };
+              auto server_connection = Connection::make(loop, kj::mv(pipe.ends[0]), capnp::rpc::twoparty::Side::SERVER);
+              server_connection->serve([&](Connection& connection) {
+                  auto server_proxy = kj::heap<ProxyServer<messages::FooInterface>>(
+                      std::make_shared<FooImplementation>(), connection);
+                  server = server_proxy;
+                  return capnp::Capability::Client(kj::mv(server_proxy));
+              });
+              // Disconnect before dropping the reference: dropping references
+              // alone does not tear down a connected Connection (see
+              // Connection::make).
+              auto server_close = [&] {
+                  if (server_connection) {
+                      server_connection->disconnect();
+                      server_connection.reset();
+                  }
+              };
+              server_disconnect = [&] { loop.sync(server_close); };
               server_disconnect_later = [&] {
                   assert(std::this_thread::get_id() == loop.m_thread_id);
-                  loop.m_task_set->add(kj::evalLater([&] { server_connection.reset(); }));
+                  loop.m_task_set->add(kj::evalLater([&] { server_close(); }));
               };
-              // Set handler to destroy the server when the client disconnects. This
-              // is ignored if server_disconnect() is called instead.
-              server_connection->onDisconnect([&] { server_connection.reset(); });
+              // Set handler to tear down the server connection when the client
+              // disconnects. This is ignored if server_disconnect() is called
+              // instead.
+              server_connection->onDisconnect([&] { server_close(); });
 
-              auto client_connection = std::make_unique<Connection>(loop, kj::mv(pipe.ends[1]));
+              auto client_connection = Connection::make(loop, kj::mv(pipe.ends[1]));
               auto client_proxy = std::make_unique<ProxyClient<messages::FooInterface>>(
                   client_connection->m_rpc_system->bootstrap(ServerVatId().vat_id).castAs<messages::FooInterface>(),
                   client_connection.get(), /* destroy_connection= */ client_owns_connection);
               if (client_owns_connection) {
-                  (void)client_connection.release();
+                  // The ProxyClient holds its own reference and disconnects
+                  // the connection when destroyed; drop the local reference so
+                  // it does not keep the connection (and the loop) alive.
+                  client_connection.reset();
               } else {
-                  client_disconnect = [&] { loop.sync([&] { client_connection.reset(); }); };
+                  client_disconnect = [&] { loop.sync([&] {
+                      if (client_connection) {
+                          client_connection->disconnect();
+                          client_connection.reset();
+                      }
+                  }); };
               }
 
               client_promise.set_value(std::move(client_proxy));
@@ -451,7 +469,7 @@ KJ_TEST("Waiting for in-flight server call to finish after disconnect")
     // disconnecting. It stays valid until server_disconnect() destroys it
     // below.
     Connection* connection{nullptr};
-    foo->m_context.loop->sync([&] { connection = setup.server->m_context.connection; });
+    foo->m_context.loop->sync([&] { connection = setup.server->m_context.connection.get(); });
 
     // Invoke the async method on a separate thread so its body blocks there
     // while this thread makes assertions. callFnAsync() takes an mp.Context,
@@ -537,8 +555,8 @@ KJ_TEST("Make simultaneous IPC calls on single remote thread")
     Thread::Client *callback_thread, *request_thread;
     foo->m_context.loop->sync([&] {
         Lock lock(tc.waiter->m_mutex);
-        callback_thread = &tc.callback_threads.at(foo->m_context.connection)->m_client;
-        request_thread = &tc.request_threads.at(foo->m_context.connection)->m_client;
+        callback_thread = &tc.callback_threads.at(foo->m_context.connection.get())->m_client;
+        request_thread = &tc.request_threads.at(foo->m_context.connection.get())->m_client;
     });
 
     // Call callIntFnAsync 3 times with n=100, 200, 300

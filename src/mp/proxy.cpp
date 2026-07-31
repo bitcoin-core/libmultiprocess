@@ -104,7 +104,7 @@ void EventLoopRef::reset(bool relock) MP_NO_TSA
     }
 }
 
-ProxyContext::ProxyContext(Connection* connection) : connection(connection), loop{*connection->m_loop} {}
+ProxyContext::ProxyContext(Connection* connection) : connection(connection->shared_from_this()), loop{*connection->m_loop} {}
 
 Connection::~Connection() noexcept(false)
 {
