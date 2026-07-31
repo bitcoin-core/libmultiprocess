@@ -696,51 +696,30 @@ ProxyClientBase<Interface, Impl>::ProxyClientBase(typename Interface::Client cli
 
 {
     MP_LOG(*m_context.loop, Log::Debug) << "Creating " << CxxTypeName(*this) << " " << this;
-    // Handler for the connection getting disconnected before this client
-    // object is destroyed.
-    auto disconnect_cb = m_context.connection->addSyncCleanup([this]() {
-        // Release client capability by move-assigning to temporary.
-        {
-            typename Interface::Client(std::move(m_client));
-        }
-        Lock lock{m_context.loop->m_mutex};
-        m_context.connection.reset();
-    });
-
-    // Two shutdown sequences are supported:
-    //
-    // - A normal sequence where client proxy objects are deleted by external
-    //   code that no longer needs them
-    //
-    // - A garbage collection sequence where the connection or event loop shuts
-    //   down while external code is still holding client references.
-    //
-    // The first case is handled here when m_context.connection is not null. The
-    // second case is handled by the disconnect_cb function, which sets
-    // m_context.connection to null so nothing happens here.
-    m_context.cleanup_fns.emplace_front([this, destroy_connection, disconnect_cb]{
-    {
+    // Cleanup function that runs when this object is destroyed. Unlike server
+    // objects, client objects are owned by application code, which can keep
+    // them alive arbitrarily long after a disconnect, but this needs no
+    // special handling: m_context holds shared ownership of the connection,
+    // so the Connection object is guaranteed to still exist here, and the
+    // m_client capability handle is safe to keep across a disconnect (Cap'n
+    // Proto keeps handles valid after the connection state is torn down;
+    // using them just fails with DISCONNECTED errors). The handle only needs
+    // to be released on the event loop thread, done in the sync() call below,
+    // because capability reference counts are not thread safe.
+    m_context.cleanup_fns.emplace_front([this, destroy_connection]{
         // If the capnp interface defines a destroy method, call it to destroy
         // the remote object, waiting for it to be deleted server side. If the
         // capnp interface does not define a destroy method, this will just call
         // an empty stub defined in the ProxyClientBase class and do nothing.
         // Exceptions are caught and logged rather than propagated because
-        // ~ProxyClientBase is noexcept and the peer may be gone by the time
-        // this runs.
+        // ~ProxyClientBase is noexcept and the connection may have been
+        // disconnected. (In that case clientInvoke fails with "IPC client
+        // method called after disconnect", caught and logged here.)
         if (kj::runCatchingExceptions([&]{ Sub::destroy(*this); }) != nullptr) {
             MP_LOG(*m_context.loop, Log::Warning) << "Remote destroy call failed during cleanup. Continuing.";
         }
 
-        // FIXME: Could just invoke removed addCleanup fn here instead of duplicating code
         m_context.loop->sync([&]() {
-            // Remove disconnect callback on cleanup so it doesn't run and try
-            // to access this object after it's destroyed. This call needs to
-            // run inside loop->sync() on the event loop thread because
-            // otherwise, if there were an ill-timed disconnect, the
-            // onDisconnect handler could fire and delete the Connection object
-            // before the removeSyncCleanup call.
-            if (m_context.connection) m_context.connection->removeSyncCleanup(disconnect_cb);
-
             // Release client capability by move-assigning to temporary.
             {
                 typename Interface::Client(std::move(m_client));
@@ -754,7 +733,6 @@ ProxyClientBase<Interface, Impl>::ProxyClientBase(typename Interface::Client cli
                 m_context.connection.reset();
             }
         });
-    }
     });
     Sub::construct(*this);
 }
