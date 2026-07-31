@@ -237,7 +237,7 @@ void Connection::waitDrained()
     // bodies sync() back to the event loop to deliver their results, and
     // server objects are destroyed on the event loop thread.
     assert(std::this_thread::get_id() != m_loop->m_thread_id);
-    m_server_objects->wait();
+    m_server_objects.wait();
 }
 
 CleanupIt Connection::addSyncCleanup(std::function<void()> fn)

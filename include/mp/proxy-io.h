@@ -453,11 +453,11 @@ struct Waiter
 //! KJ promise of an in-flight call; it does not interrupt a call body that
 //! was already dispatched to a worker thread (see Connection::disconnect).
 //!
-//! The counter is held via shared_ptr by the Connection and by every
-//! ProxyServer object created for the connection, because a ProxyServer
-//! object kept alive by an in-flight call can outlive the Connection (see
-//! ~ProxyServerBase), and its destructor must decrement state that is still
-//! valid.
+//! The counter can be a plain Connection member because proxy objects hold
+//! shared ownership of their Connection (see ProxyContext::connection), so a
+//! ProxyServer object kept alive by an in-flight call cannot outlive the
+//! Connection, and its destructor can always safely reach the counter through
+//! m_context.connection.
 //!
 //! ProxyServer<Thread> and ProxyServer<ThreadMap> are separate
 //! specializations (not ProxyServerBase instances) and are intentionally not
@@ -591,7 +591,7 @@ public:
     //! Number of live ProxyServer objects associated with this connection.
     //! After disconnect(), a nonzero count means server call bodies are still
     //! executing on worker threads. May be called from any thread.
-    size_t pendingServerObjects() const { return m_server_objects->count(); }
+    size_t pendingServerObjects() const { return m_server_objects.count(); }
 
     //! Register a cleanup function to run on the event loop thread when
     //! disconnect() is called. The only current use is by SetThread, which
@@ -633,7 +633,7 @@ public:
 
     //! Tracker for live ProxyServer objects associated with this connection,
     //! used by waitDrained().
-    std::shared_ptr<ServerObjectTracker> m_server_objects{std::make_shared<ServerObjectTracker>()};
+    ServerObjectTracker m_server_objects;
 
     std::optional<::capnp::RpcSystem<::capnp::rpc::twoparty::VatId>> m_rpc_system;
 
@@ -756,14 +756,14 @@ ProxyClientBase<Interface, Impl>::~ProxyClientBase() noexcept
 
 template <typename Interface, typename Impl>
 ProxyServerBase<Interface, Impl>::ProxyServerBase(std::shared_ptr<Impl> impl, Connection& connection)
-    : m_impl(std::move(impl)), m_context(&connection), m_server_objects(connection.m_server_objects)
+    : m_impl(std::move(impl)), m_context(&connection)
 {
     // Register this object with the connection's live-object tracker. This
     // runs on the event loop thread, so it is ordered before any connection
     // teardown (which also runs on the event loop thread): code that
     // disconnects the connection and then calls Connection::waitDrained() is
     // guaranteed to see this object.
-    m_server_objects->add();
+    connection.m_server_objects.add();
     MP_LOG(*m_context.loop, Log::Debug) << "Creating " << CxxTypeName(*this) << " " << this;
     assert(m_impl);
 }
@@ -809,15 +809,14 @@ ProxyServerBase<Interface, Impl>::~ProxyServerBase()
     }
     assert(m_context.cleanup_fns.empty());
     MP_LOG(*m_context.loop, Log::Debug) << "Destroying " << CxxTypeName(*this) << " " << this;
-    // Deregister this object from the connection's live-object tracker,
-    // through the shared m_server_objects handle since m_context.connection
-    // may be dangling here (see comment above). Done at the end of the
-    // destructor so a zero count means destruction fully completed. Note that
-    // any m_impl destruction scheduled through addAsyncCleanup above is NOT
-    // covered by the tracker: it runs later on the async cleanup thread, so
-    // Connection::waitDrained() waits for server call bodies, not for
-    // m_impl destructors.
-    m_server_objects->remove();
+    // Deregister this object from the connection's live-object tracker
+    // (m_context.connection is always valid here, see comment above). Done at
+    // the end of the destructor so a zero count means destruction fully
+    // completed. Note that any m_impl destruction scheduled through
+    // addAsyncCleanup above is NOT covered by the tracker: it runs later on
+    // the async cleanup thread, so Connection::waitDrained() waits for server
+    // call bodies, not for m_impl destructors.
+    m_context.connection->m_server_objects.remove();
 }
 
 //! If the capnp interface defined a special "destroy" method, as described the
