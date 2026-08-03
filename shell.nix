@@ -53,6 +53,23 @@ let
   })).override (lib.optionalAttrs enableLibcxx { clangStdenv = llvm.libcxxStdenv; });
   clang = if enableLibcxx then llvm.libcxxClang else llvm.clang;
   clang-tools = llvm.clang-tools.override { inherit enableLibcxx; };
+  # IWYU parses source files with its own embedded clang frontend, locating
+  # standard library headers through CPATH/CPLUS_INCLUDE_PATH variables set by
+  # its nixpkgs wrapper script:
+  # https://github.com/NixOS/nixpkgs/blob/master/pkgs/development/tools/analysis/include-what-you-use/wrapper
+  # The wrapper derives those variables from the clang recorded in the
+  # derivation's `clang` attribute, which defaults to the toolchain IWYU was
+  # built against (libstdc++-flavored on Linux), not the toolchain this shell
+  # uses. Rebind it to this shell's compiler so IWYU resolves the same
+  # standard library the build uses.
+  #
+  # Mixing pkgs and crossPkgs here is intentional: IWYU comes from pkgs
+  # because it runs on the build machine, while `clang` comes from crossPkgs
+  # (via llvm) so that in a cross shell IWYU is baked with the cross
+  # toolchain's target headers — what it needs to analyze a cross build.
+  include-what-you-use = pkgs.include-what-you-use.overrideAttrs (old: {
+    inherit clang;
+  });
   cmakeHashes = {
     "3.12.4" = "sha256-UlVYS/0EPrcXViz/iULUcvHA5GecSUHYS6raqbKOMZQ=";
   };
@@ -81,6 +98,13 @@ in crossPkgs.mkShell {
   CC = if gcc == null then null else "${gcc}/bin/gcc";
   CXX = if gcc == null then null else "${gcc}/bin/g++";
 
-  # Tell IWYU where its libc++ mapping lives
+  # Tell IWYU where its libc++ mapping file lives. libcxx.imp maps
+  # libc++-internal detail headers (e.g. <__vector/vector.h>) to the public
+  # headers IWYU should suggest instead. IWYU only applies mapping tables
+  # compiled into its binary unless a mapping file is passed explicitly — it
+  # does not discover the libcxx.imp shipped alongside the headers it parses —
+  # so CMakeLists.txt forwards this variable via -Xiwyu --mapping_file. Taking
+  # the file from llvm.libcxx keeps it consistent with the headers IWYU parses
+  # via the include-what-you-use override above.
   IWYU_MAPPING_FILE = if enableLibcxx then "${llvm.libcxx.dev}/include/c++/v1/libcxx.imp" else null;
 }
