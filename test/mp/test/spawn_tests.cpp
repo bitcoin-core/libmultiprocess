@@ -4,8 +4,11 @@
 
 #include <mp/util.h>
 
+#include <kj/common.h>
+#include <kj/debug.h>
 #include <kj/test.h>
 
+#include <cerrno>
 #include <chrono>
 #include <compare>
 #include <condition_variable>
@@ -13,6 +16,8 @@
 #include <cstdlib>
 #include <mutex>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <sys/wait.h>
 #include <thread>
 #include <tuple>
@@ -112,6 +117,19 @@ KJ_TEST("SpawnProcess does not run callback in child")
 
     KJ_EXPECT(exited, "Timeout waiting for child process to exit");
     KJ_EXPECT(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
+KJ_TEST("SpawnProcess throws on execvp failure")
+{
+    try {
+        SpawnProcess([&](SpawnConnectInfo) -> std::vector<std::string> {
+            return {"/nonexistent/binary"};
+        });
+        KJ_EXPECT(false, "expected SpawnProcess to throw");
+    } catch (const std::system_error& e) {
+        KJ_EXPECT(e.code().value() == ENOENT);
+        KJ_EXPECT(std::string_view{e.what()}.find("execvp") != std::string_view::npos);
+    }
 }
 } // namespace test
 } // namespace mp
