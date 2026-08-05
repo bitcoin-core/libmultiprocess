@@ -288,7 +288,16 @@ KJ_TEST("Calling IPC method after server connection is closed")
     KJ_EXPECT(foo->add(1, 2) == 3);
     setup.server_disconnect();
 
-    EXPECT_EXCEPTION(foo->add(1, 2), "IPC client method call interrupted by disconnect.");
+    try {
+        foo->add(1, 2);
+        KJ_EXPECT(false);
+    } catch (const std::runtime_error& e) {
+        std::string_view reason{e.what()};
+
+        // The disconnect handler may delete the connection before the
+        // call is processed or while the call is in flight, both errors are possible.
+        KJ_EXPECT(reason == "IPC client method called after disconnect." || reason == "IPC client method call interrupted by disconnect.");
+    }
 }
 
 KJ_TEST("Calling IPC method and disconnecting during the call")
