@@ -279,6 +279,9 @@ decltype(auto) TryFinally(Fn&& fn, After&& after)
     }
 }
 
+//! Set the OS-level name of the current thread
+void SetOsThreadName(const char* name);
+
 //! Format current thread name as "{exe_name}-{$pid}/{thread_name}-{$tid}".
 std::string ThreadName(const char* exe_name);
 

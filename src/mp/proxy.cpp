@@ -358,6 +358,7 @@ void EventLoop::startAsyncThread()
         m_cv.notify_all();
     } else if (!m_async_fns->empty()) {
         m_async_thread = std::thread([this] {
+            SetOsThreadName("capnp-async");
             Lock lock(m_mutex);
             while (m_async_fns) {
                 if (!m_async_fns->empty()) {
@@ -483,7 +484,8 @@ kj::Promise<void> ProxyServer<ThreadMap>::makePool(MakePoolContext context)
     for (uint32_t i = 0; i < count; ++i) {
         const std::string thread_name = "pool/" + std::to_string(i);
         std::promise<ThreadContext*> thread_context;
-        std::thread thread([&loop, &thread_context, thread_name]() {
+        std::thread thread([&loop, &thread_context, thread_name, i]() {
+            SetOsThreadName(("capnp-pool-" + std::to_string(i)).c_str());
             CurrentThread().thread_name = ThreadName(loop.m_exe_name) + " (" + thread_name + ")";
             CurrentThread().waiter = std::make_unique<Waiter>();
             Lock lock(CurrentThread().waiter->m_mutex);
@@ -503,6 +505,7 @@ kj::Promise<void> ProxyServer<ThreadMap>::makeThread(MakeThreadContext context)
     const std::string from = context.getParams().getName();
     std::promise<ThreadContext*> thread_context;
     std::thread thread([&loop, &thread_context, from]() {
+        SetOsThreadName("capnp-worker");
         CurrentThread().thread_name = ThreadName(loop.m_exe_name) + " (from " + from + ")";
         CurrentThread().waiter = std::make_unique<Waiter>();
         Lock lock(CurrentThread().waiter->m_mutex);
