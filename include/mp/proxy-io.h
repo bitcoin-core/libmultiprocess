@@ -84,14 +84,16 @@ struct ProxyClient<Thread> : public ProxyClientBase<Thread, ::capnp::Void>
     ~ProxyClient();
 
     //! Reference to callback function that is run if there is a sudden
-    //! disconnect and the Connection object is destroyed before this
-    //! ProxyClient<Thread> object. The callback will destroy this object and
-    //! remove its entry from the thread's request_threads or callback_threads
-    //! map. It will also reset m_disconnect_cb so the destructor does not
-    //! access it. In the normal case where there is no sudden disconnect, the
-    //! destructor will unregister m_disconnect_cb so the callback is never run.
-    //! Since this variable is accessed from multiple threads, accesses should
-    //! be guarded with the associated Waiter::m_mutex.
+    //! disconnect and the Connection is disconnected before this
+    //! ProxyClient<Thread> object is destroyed. The callback will destroy this
+    //! object and remove its entry from the thread's request_threads or
+    //! callback_threads map (see SetThread, which explains why removal must
+    //! happen eagerly at disconnect time). It will also reset m_disconnect_cb
+    //! so the destructor does not access it. In the normal case where there is
+    //! no sudden disconnect, the destructor will unregister m_disconnect_cb so
+    //! the callback is never run. Since this variable is accessed from
+    //! multiple threads, accesses should be guarded with the associated
+    //! Waiter::m_mutex.
     std::optional<CleanupIt> m_disconnect_cb;
 };
 
@@ -344,8 +346,11 @@ public:
     //! Capnp list of pending promises.
     std::unique_ptr<kj::TaskSet> m_task_set;
 
-    //! List of connections.
-    std::list<Connection> m_incoming_connections;
+    //! List of connections. Holds one shared_ptr reference per connection;
+    //! proxy objects created for a connection hold additional references (see
+    //! ProxyContext::connection), so erasing a connection from this list does
+    //! not necessarily destroy it.
+    std::list<std::shared_ptr<Connection>> m_incoming_connections;
 
     //! Logging options
     LogOptions m_log_opts;
@@ -432,35 +437,171 @@ struct Waiter
     std::optional<kj::Function<void()>> m_fn MP_GUARDED_BY(m_mutex);
 };
 
+//! Counter tracking the number of live ProxyServer objects associated with a
+//! Connection, used to wait for a disconnected connection's server side to
+//! become quiescent (see Connection::waitDrained).
+//!
+//! Why counting live server objects is a valid "no server call body running"
+//! signal: a ProxyServer object is reference counted and is not destroyed
+//! until its outstanding calls finish. Cap'n Proto keeps the target capability
+//! alive for the duration of a call, and the mp.Context PassField overload and
+//! ProxyServer<Thread>::post() additionally pin it (self = thisCap()) until
+//! the call body running on a worker thread completes and its result is
+//! delivered. So "object destroyed" implies "its call bodies finished", and a
+//! connection whose live-object count reached zero after a disconnect has no
+//! server code running. This matters because disconnecting only cancels the
+//! KJ promise of an in-flight call; it does not interrupt a call body that
+//! was already dispatched to a worker thread (see Connection::disconnect).
+//!
+//! The counter can be a plain Connection member because proxy objects hold
+//! shared ownership of their Connection (see ProxyContext::connection), so a
+//! ProxyServer object kept alive by an in-flight call cannot outlive the
+//! Connection, and its destructor can always safely reach the counter through
+//! m_context.connection.
+//!
+//! ProxyServer<Thread> and ProxyServer<ThreadMap> are separate
+//! specializations (not ProxyServerBase instances) and are intentionally not
+//! counted: every application method body runs on an interface ProxyServer,
+//! which is counted and stays alive for the duration of the body, so counting
+//! those is sufficient.
+struct ServerObjectTracker
+{
+    //! Called from the ProxyServerBase constructor (on the event loop thread).
+    void add()
+    {
+        const Lock lock(m_mutex);
+        m_count += 1;
+    }
+
+    //! Called from the ProxyServerBase destructor (on the event loop thread).
+    void remove()
+    {
+        {
+            const Lock lock(m_mutex);
+            assert(m_count > 0);
+            m_count -= 1;
+        }
+        m_cv.notify_all();
+    }
+
+    //! Return the current count. May be called from any thread.
+    size_t count() const
+    {
+        const Lock lock(m_mutex);
+        return m_count;
+    }
+
+    //! Block until no server objects remain.
+    void wait()
+    {
+        Lock lock(m_mutex);
+        m_cv.wait(lock.m_lock, [this]() MP_REQUIRES(m_mutex) { return m_count == 0; });
+    }
+
+    mutable Mutex m_mutex;
+    std::condition_variable m_cv;
+    size_t m_count MP_GUARDED_BY(m_mutex){0};
+};
+
 //! Object holding network & rpc state associated with either an incoming server
-//! connection, or an outgoing client connection. It must be created and destroyed
-//! on the event loop thread.
+//! connection, or an outgoing client connection. It must be created on the
+//! event loop thread with the make() factory function, which returns a
+//! shared_ptr owner whose custom deleter destroys the object on the event loop
+//! thread. Proxy objects created for the connection share ownership of it (see
+//! ProxyContext::connection), so the Connection is guaranteed to outlive them
+//! and stays valid -- as a disconnected husk -- even after disconnect().
 //! In addition to Cap'n Proto state, it also holds lists of callbacks to run
 //! when the connection is closed.
-class Connection
+class Connection : public std::enable_shared_from_this<Connection>
 {
 public:
-    Connection(EventLoop& loop, kj::Own<kj::AsyncIoStream>&& stream_)
-        : m_loop(loop), m_stream(kj::mv(stream_)),
-          m_network(*m_stream, ::capnp::rpc::twoparty::Side::CLIENT, ::capnp::ReaderOptions()),
-          m_rpc_system(::capnp::makeRpcClient(m_network)) {}
-    Connection(EventLoop& loop,
-        kj::Own<kj::AsyncIoStream>&& stream_,
-        const std::function<::capnp::Capability::Client(Connection&)>& make_client)
-        : m_loop(loop), m_stream(kj::mv(stream_)),
-          m_network(*m_stream, ::capnp::rpc::twoparty::Side::SERVER, ::capnp::ReaderOptions()),
-          m_rpc_system(::capnp::makeRpcServer(m_network, make_client(*this))) {}
+    //! Create a Connection with shared ownership. Connection objects must be
+    //! owned by shared_ptr because proxy objects created for the connection
+    //! take shared ownership of it in their ProxyContext (via
+    //! shared_from_this), which requires an existing shared_ptr owner. The
+    //! custom deleter runs the destructor on the event loop thread (running
+    //! it directly if the last reference is dropped on the event loop thread,
+    //! posting to the loop otherwise), which ~Connection requires. The
+    //! connection's own EventLoopRef keeps the loop running until the deleter
+    //! has run.
+    //!
+    //! Note: dropping shared_ptr references alone never destroys a connected
+    //! Connection, because connected state holds capability references to
+    //! server objects which themselves hold references back to the Connection
+    //! (m_rpc_system exports -> ProxyServer objects ->
+    //! ProxyContext::connection). disconnect() breaks these cycles, so every
+    //! code path that tears down a connection must call it; after that, the
+    //! object is destroyed when the last reference is dropped.
+    template <typename... Args>
+    static std::shared_ptr<Connection> make(Args&&... args)
+    {
+        return {new Connection(std::forward<Args>(args)...), [](Connection* connection) {
+            EventLoop& loop{*connection->m_loop};
+            loop.sync([&] { delete connection; });
+        }};
+    }
 
-    //! Run cleanup functions. Must be called from the event loop thread. First
-    //! calls synchronous cleanup functions while blocked (to free capnp
-    //! Capability::Client handles owned by ProxyClient objects), then schedules
-    //! asynchronous cleanup functions to run in a worker thread (to run
-    //! destructors of m_impl instances owned by ProxyServer objects).
+    //! Start serving RPC requests on the connection, handling them with server
+    //! objects created by the make_client callback. Called (for server-side
+    //! connections) after make(), not during construction, because the server
+    //! objects created by the callback take shared ownership of this
+    //! connection via shared_from_this(), which requires the shared_ptr owner
+    //! returned by make() to already exist.
+    void serve(const std::function<::capnp::Capability::Client(Connection&)>& make_client)
+    {
+        assert(!m_rpc_system);
+        m_rpc_system.emplace(::capnp::makeRpcServer(*m_network, make_client(*this)));
+    }
+
+    //! Destroy the connection. Calls disconnect() if it has not been called
+    //! already. Must be called from the event loop thread.
     ~Connection() noexcept(false);
 
-    //! Register synchronous cleanup function to run on event loop thread (with
-    //! access to capnp thread local variables) when disconnect() is called.
-    //! any new i/o.
+    //! Sever the connection without destroying this object: cancel any pending
+    //! onDisconnect handlers, cancel KJ promises for calls in progress, tear
+    //! down the RPC system (garbage collecting any server objects that are not
+    //! kept alive by in-flight calls), run synchronous cleanup functions
+    //! registered by client objects (releasing their capnp
+    //! Capability::Client handles), and release Thread capabilities so worker
+    //! threads are torn down. Safe to call more than once; the destructor
+    //! calls it automatically if it has not been called. Must be called from
+    //! the event loop thread.
+    //!
+    //! Note: disconnecting cancels the KJ promise of any call in progress, but
+    //! a C++ server method body that was already dispatched to a worker thread
+    //! (see ProxyServer<Thread>::post) is not interrupted by this and runs to
+    //! completion.
+    void disconnect();
+
+    //! Block until no ProxyServer objects associated with this connection
+    //! remain, i.e. until no server call body is still executing (see
+    //! ServerObjectTracker). Meant to be called after disconnect(): before it,
+    //! new server objects can still be created and idle server objects are
+    //! not garbage collected, so the count would not drain. Must NOT be called
+    //! from the event loop thread: in-flight call bodies need the event loop
+    //! to deliver their results before their server objects are destroyed, so
+    //! blocking the loop here would deadlock.
+    //!
+    //! This lets shutdown code ensure no IPC call body is still executing (and
+    //! dereferencing application state that is about to be freed) after
+    //! incoming connections are disconnected. See Ipc::disconnectIncoming and
+    //! https://github.com/bitcoin/bitcoin/issues/35845.
+    void waitDrained();
+
+    //! Number of live ProxyServer objects associated with this connection.
+    //! After disconnect(), a nonzero count means server call bodies are still
+    //! executing on worker threads. May be called from any thread.
+    size_t pendingServerObjects() const { return m_server_objects.count(); }
+
+    //! Register a cleanup function to run on the event loop thread when
+    //! disconnect() is called. The only current use is by SetThread, which
+    //! registers callbacks that eagerly remove this connection's entries from
+    //! per-thread connection maps (ProxyClient<Thread> objects owned by other
+    //! threads, see ThreadContext). Eager removal is required because the
+    //! owning threads may never touch their maps again, and a surviving entry
+    //! would hold this Connection object -- and through its EventLoopRef the
+    //! event loop -- alive indefinitely. Other proxy objects need no
+    //! disconnect notification, see Connection::disconnect.
     CleanupIt addSyncCleanup(std::function<void()> fn);
     void removeSyncCleanup(CleanupIt it);
 
@@ -473,7 +614,7 @@ public:
         // handler fires, do not call the function f right away, instead add it
         // to the EventLoop TaskSet to avoid "Promise callback destroyed itself"
         // error in the typical case where f deletes this Connection object.
-        m_on_disconnect.add(m_network.onDisconnect().then(
+        m_on_disconnect.add(m_network->onDisconnect().then(
             [f = std::forward<F>(f), this]() mutable { m_loop->m_task_set->add(kj::evalLater(kj::mv(f))); }));
     }
 
@@ -484,7 +625,16 @@ public:
     //! disconnections, if the connection is closed locally first by deleting
     //! this Connection object.
     kj::TaskSet m_on_disconnect{m_error_handler};
-    ::capnp::TwoPartyVatNetwork m_network;
+    //! Wrapped in std::optional so disconnect() can destroy it (and m_stream
+    //! below) to sever the transport while this object stays alive. Closing
+    //! the stream is what makes the peer observe the disconnect: it reads EOF
+    //! and fails its outstanding calls with DISCONNECTED errors.
+    std::optional<::capnp::TwoPartyVatNetwork> m_network;
+
+    //! Tracker for live ProxyServer objects associated with this connection,
+    //! used by waitDrained().
+    ServerObjectTracker m_server_objects;
+
     std::optional<::capnp::RpcSystem<::capnp::rpc::twoparty::VatId>> m_rpc_system;
 
     // ThreadMap interface client, used to create a remote server thread when an
@@ -507,10 +657,28 @@ public:
     //! still executing at time of disconnection.
     kj::Canceler m_canceler;
 
-    //! Cleanup functions to run if connection is broken unexpectedly.  List
-    //! will be empty if all ProxyClient are destroyed cleanly before the
-    //! connection is destroyed.
+    //! Cleanup functions to run when the connection is disconnected, removing
+    //! this connection's entries from per-thread connection maps. See
+    //! addSyncCleanup. List will be empty if all ProxyClient<Thread> objects
+    //! are destroyed cleanly before the connection is disconnected.
     CleanupList m_sync_cleanup_fns;
+
+    //! Set once disconnect() has run. Only accessed on the event loop thread.
+    bool m_disconnected{false};
+
+private:
+    //! Construct a client-side connection. Private; use make().
+    Connection(EventLoop& loop, kj::Own<kj::AsyncIoStream>&& stream_)
+        : Connection(loop, kj::mv(stream_), ::capnp::rpc::twoparty::Side::CLIENT)
+    {
+        m_rpc_system.emplace(::capnp::makeRpcClient(*m_network));
+    }
+    //! Construct a connection for the given side without starting the RPC
+    //! system. Server-side connections start it with serve() after make()
+    //! returns. Private; use make().
+    Connection(EventLoop& loop, kj::Own<kj::AsyncIoStream>&& stream_, ::capnp::rpc::twoparty::Side side)
+        : m_loop(loop), m_stream(kj::mv(stream_)),
+          m_network(std::in_place, *m_stream, side, ::capnp::ReaderOptions()) {}
 };
 
 //! Vat id for server side of connection. Required argument to RpcSystem::bootStrap()
@@ -537,60 +705,43 @@ ProxyClientBase<Interface, Impl>::ProxyClientBase(typename Interface::Client cli
 
 {
     MP_LOG(*m_context.loop, Log::Debug) << "Creating " << CxxTypeName(*this) << " " << this;
-    // Handler for the connection getting destroyed before this client object.
-    auto disconnect_cb = m_context.connection->addSyncCleanup([this]() {
-        // Release client capability by move-assigning to temporary.
-        {
-            typename Interface::Client(std::move(m_client));
-        }
-        Lock lock{m_context.loop->m_mutex};
-        m_context.connection = nullptr;
-    });
-
-    // Two shutdown sequences are supported:
-    //
-    // - A normal sequence where client proxy objects are deleted by external
-    //   code that no longer needs them
-    //
-    // - A garbage collection sequence where the connection or event loop shuts
-    //   down while external code is still holding client references.
-    //
-    // The first case is handled here when m_context.connection is not null. The
-    // second case is handled by the disconnect_cb function, which sets
-    // m_context.connection to null so nothing happens here.
-    m_context.cleanup_fns.emplace_front([this, destroy_connection, disconnect_cb]{
-    {
+    // Cleanup function that runs when this object is destroyed. Unlike server
+    // objects, client objects are owned by application code, which can keep
+    // them alive arbitrarily long after a disconnect, but this needs no
+    // special handling: m_context holds shared ownership of the connection,
+    // so the Connection object is guaranteed to still exist here, and the
+    // m_client capability handle is safe to keep across a disconnect (Cap'n
+    // Proto keeps handles valid after the connection state is torn down;
+    // using them just fails with DISCONNECTED errors). The handle only needs
+    // to be released on the event loop thread, done in the sync() call below,
+    // because capability reference counts are not thread safe.
+    m_context.cleanup_fns.emplace_front([this, destroy_connection]{
         // If the capnp interface defines a destroy method, call it to destroy
         // the remote object, waiting for it to be deleted server side. If the
         // capnp interface does not define a destroy method, this will just call
         // an empty stub defined in the ProxyClientBase class and do nothing.
         // Exceptions are caught and logged rather than propagated because
-        // ~ProxyClientBase is noexcept and the peer may be gone by the time
-        // this runs.
+        // ~ProxyClientBase is noexcept and the connection may have been
+        // disconnected. (In that case clientInvoke fails with "IPC client
+        // method called after disconnect", caught and logged here.)
         if (kj::runCatchingExceptions([&]{ Sub::destroy(*this); }) != nullptr) {
             MP_LOG(*m_context.loop, Log::Warning) << "Remote destroy call failed during cleanup. Continuing.";
         }
 
-        // FIXME: Could just invoke removed addCleanup fn here instead of duplicating code
         m_context.loop->sync([&]() {
-            // Remove disconnect callback on cleanup so it doesn't run and try
-            // to access this object after it's destroyed. This call needs to
-            // run inside loop->sync() on the event loop thread because
-            // otherwise, if there were an ill-timed disconnect, the
-            // onDisconnect handler could fire and delete the Connection object
-            // before the removeSyncCleanup call.
-            if (m_context.connection) m_context.connection->removeSyncCleanup(disconnect_cb);
-
             // Release client capability by move-assigning to temporary.
             {
                 typename Interface::Client(std::move(m_client));
             }
             if (destroy_connection) {
-                delete m_context.connection;
-                m_context.connection = nullptr;
+                // Disconnect the connection and drop this object's reference
+                // while on the event loop thread, destroying the Connection
+                // here unless other proxy objects still reference it (in
+                // which case it is destroyed when the last of them is).
+                m_context.connection->disconnect();
+                m_context.connection.reset();
             }
         });
-    }
     });
     Sub::construct(*this);
 }
@@ -607,6 +758,12 @@ template <typename Interface, typename Impl>
 ProxyServerBase<Interface, Impl>::ProxyServerBase(std::shared_ptr<Impl> impl, Connection& connection)
     : m_impl(std::move(impl)), m_context(&connection)
 {
+    // Register this object with the connection's live-object tracker. This
+    // runs on the event loop thread, so it is ordered before any connection
+    // teardown (which also runs on the event loop thread): code that
+    // disconnects the connection and then calls Connection::waitDrained() is
+    // guaranteed to see this object.
+    connection.m_server_objects.add();
     MP_LOG(*m_context.loop, Log::Debug) << "Creating " << CxxTypeName(*this) << " " << this;
     assert(m_impl);
 }
@@ -614,15 +771,13 @@ ProxyServerBase<Interface, Impl>::ProxyServerBase(std::shared_ptr<Impl> impl, Co
 //! ProxyServer destructor, called from the EventLoop thread by Cap'n Proto
 //! garbage collection code after there are no more references to this object.
 //! This will typically happen when the corresponding ProxyClient object on the
-//! other side of the connection is destroyed. It can also happen earlier if the
-//! connection is broken or destroyed. In the latter case this destructor will
-//! typically be called inside m_rpc_system.reset() call in the ~Connection
-//! destructor while the Connection object still exists. However, because
-//! ProxyServer objects are refcounted, and the Connection object could be
-//! destroyed while asynchronous IPC calls are still in-flight, it's possible
-//! for this destructor to be called after the Connection object no longer
-//! exists, so it is NOT valid to dereference the m_context.connection pointer
-//! from this function.
+//! other side of the connection is destroyed. It can also happen earlier if
+//! the connection is broken or disconnected, in which case this destructor is
+//! typically called inside the m_rpc_system.reset() call in
+//! Connection::disconnect(). If an asynchronous IPC call is still in-flight at
+//! disconnect time, Cap'n Proto keeps this object alive and this destructor
+//! runs later, when the call body finishes; m_context.connection remains valid
+//! even then, because m_context holds shared ownership of the Connection.
 template <typename Interface, typename Impl>
 ProxyServerBase<Interface, Impl>::~ProxyServerBase()
 {
@@ -654,6 +809,14 @@ ProxyServerBase<Interface, Impl>::~ProxyServerBase()
     }
     assert(m_context.cleanup_fns.empty());
     MP_LOG(*m_context.loop, Log::Debug) << "Destroying " << CxxTypeName(*this) << " " << this;
+    // Deregister this object from the connection's live-object tracker
+    // (m_context.connection is always valid here, see comment above). Done at
+    // the end of the destructor so a zero count means destruction fully
+    // completed. Note that any m_impl destruction scheduled through
+    // addAsyncCleanup above is NOT covered by the tracker: it runs later on
+    // the async cleanup thread, so Connection::waitDrained() waits for server
+    // call bodies, not for m_impl destructors.
+    m_context.connection->m_server_objects.remove();
 }
 
 //! If the capnp interface defined a special "destroy" method, as described the
@@ -836,18 +999,27 @@ template <typename InitInterface>
 std::unique_ptr<ProxyClient<InitInterface>> ConnectStream(EventLoop& loop, Stream stream)
 {
     typename InitInterface::Client init_client(nullptr);
-    std::unique_ptr<Connection> connection;
+    std::shared_ptr<Connection> connection;
     loop.sync([&] {
-        connection = std::make_unique<Connection>(loop, kj::mv(stream));
+        connection = Connection::make(loop, kj::mv(stream));
         init_client = connection->m_rpc_system->bootstrap(ServerVatId().vat_id).castAs<InitInterface>();
         Connection* connection_ptr = connection.get();
         connection->onDisconnect([&loop, connection_ptr] {
             MP_LOG(loop, Log::Warning) << "IPC client: unexpected network disconnect.";
-            delete connection_ptr;
+            // Safe to dereference the raw pointer: this handler is owned by
+            // the connection (m_on_disconnect) so it never runs after the
+            // connection is destroyed. The connection object itself is
+            // destroyed when the ProxyClient<InitInterface> returned below
+            // (which shares ownership of it) is destroyed.
+            connection_ptr->disconnect();
         });
     });
+    // The local `connection` reference is dropped when this function returns;
+    // the returned ProxyClient keeps the connection alive (see
+    // ProxyContext::connection) and disconnects it on destruction
+    // (destroy_connection).
     return std::make_unique<ProxyClient<InitInterface>>(
-        kj::mv(init_client), connection.release(), /* destroy_connection= */ true);
+        kj::mv(init_client), connection.get(), /* destroy_connection= */ true);
 }
 
 //! Given stream and init objects, construct a new ProxyServer object that
@@ -857,18 +1029,29 @@ std::unique_ptr<ProxyClient<InitInterface>> ConnectStream(EventLoop& loop, Strea
 template <typename InitInterface, typename InitImpl, typename OnDisconnect>
 void _Serve(EventLoop& loop, kj::Own<kj::AsyncIoStream>&& stream, InitImpl& init, OnDisconnect&& on_disconnect)
 {
-    loop.m_incoming_connections.emplace_front(loop, kj::mv(stream), [&](Connection& connection) {
+    auto connection{Connection::make(loop, kj::mv(stream), ::capnp::rpc::twoparty::Side::SERVER)};
+    loop.m_incoming_connections.emplace_front(connection);
+    connection->serve([&](Connection& connection) {
         // Disable deleter so proxy server object doesn't attempt to delete the
         // init implementation when the proxy client is destroyed or
         // disconnected.
         return kj::heap<ProxyServer<InitInterface>>(std::shared_ptr<InitImpl>(&init, [](InitImpl*){}), connection);
     });
-    auto it = loop.m_incoming_connections.begin();
     MP_LOG(loop, Log::Info) << "IPC server: socket connected.";
     if (loop.testing_hook_connected) loop.testing_hook_connected();
-    it->onDisconnect([&loop, it, on_disconnect = std::forward<OnDisconnect>(on_disconnect)]() mutable {
+    connection->onDisconnect([&loop, weak = std::weak_ptr<Connection>(connection),
+                              on_disconnect = std::forward<OnDisconnect>(on_disconnect)]() mutable {
         MP_LOG(loop, Log::Info) << "IPC server: socket disconnected.";
-        loop.m_incoming_connections.erase(it);
+        // Look the connection up through a weak_ptr and remove it from the
+        // list by value instead of capturing an iterator. Between this handler
+        // being queued (on the loop task set, see onDisconnect) and running,
+        // other code (e.g. Ipc::disconnectIncoming during shutdown) may have
+        // disconnected the connection, removed it from the list, or destroyed
+        // it, and erasing a stale iterator would be undefined behavior.
+        if (auto connection{weak.lock()}) {
+            connection->disconnect();
+            loop.m_incoming_connections.remove(connection);
+        }
         on_disconnect();
         if (loop.testing_hook_disconnected) loop.testing_hook_disconnected();
     });

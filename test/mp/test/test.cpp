@@ -95,30 +95,48 @@ public:
               });
               auto pipe = loop.m_io_context.provider->newTwoWayPipe();
 
-              auto server_connection =
-                  std::make_unique<Connection>(loop, kj::mv(pipe.ends[0]), [&](Connection& connection) {
-                      auto server_proxy = kj::heap<ProxyServer<messages::FooInterface>>(
-                          std::make_shared<FooImplementation>(), connection);
-                      server = server_proxy;
-                      return capnp::Capability::Client(kj::mv(server_proxy));
-                  });
-              server_disconnect = [&] { loop.sync([&] { server_connection.reset(); }); };
+              auto server_connection = Connection::make(loop, kj::mv(pipe.ends[0]), capnp::rpc::twoparty::Side::SERVER);
+              server_connection->serve([&](Connection& connection) {
+                  auto server_proxy = kj::heap<ProxyServer<messages::FooInterface>>(
+                      std::make_shared<FooImplementation>(), connection);
+                  server = server_proxy;
+                  return capnp::Capability::Client(kj::mv(server_proxy));
+              });
+              // Disconnect before dropping the reference: dropping references
+              // alone does not tear down a connected Connection (see
+              // Connection::make).
+              auto server_close = [&] {
+                  if (server_connection) {
+                      server_connection->disconnect();
+                      server_connection.reset();
+                  }
+              };
+              server_disconnect = [&] { loop.sync(server_close); };
               server_disconnect_later = [&] {
                   assert(std::this_thread::get_id() == loop.m_thread_id);
-                  loop.m_task_set->add(kj::evalLater([&] { server_connection.reset(); }));
+                  loop.m_task_set->add(kj::evalLater([&] { server_close(); }));
               };
-              // Set handler to destroy the server when the client disconnects. This
-              // is ignored if server_disconnect() is called instead.
-              server_connection->onDisconnect([&] { server_connection.reset(); });
+              // Set handler to tear down the server connection when the client
+              // disconnects. This is ignored if server_disconnect() is called
+              // instead.
+              server_connection->onDisconnect([&] { server_close(); });
 
-              auto client_connection = std::make_unique<Connection>(loop, kj::mv(pipe.ends[1]));
+              auto client_connection = Connection::make(loop, kj::mv(pipe.ends[1]));
               auto client_proxy = std::make_unique<ProxyClient<messages::FooInterface>>(
                   client_connection->m_rpc_system->bootstrap(ServerVatId().vat_id).castAs<messages::FooInterface>(),
                   client_connection.get(), /* destroy_connection= */ client_owns_connection);
               if (client_owns_connection) {
-                  (void)client_connection.release();
+                  // The ProxyClient holds its own reference and disconnects
+                  // the connection when destroyed; drop the local reference so
+                  // it does not keep the connection (and the loop) alive.
+                  client_connection.reset();
               } else {
-                  client_disconnect = [&] { loop.sync([&] { client_connection.reset(); }); };
+                  client_disconnect = [&] { loop.sync([&] {
+                      if (client_connection) {
+                          client_connection->disconnect();
+                          client_connection.reset();
+                      }
+                  }); };
               }
 
               client_promise.set_value(std::move(client_proxy));
@@ -425,6 +443,77 @@ KJ_TEST("Calling async IPC method, with server disconnect after cleanup")
     EXPECT_EXCEPTION(foo->callFnAsync(), "IPC client method call interrupted by disconnect.");
 }
 
+KJ_TEST("Waiting for in-flight server call to finish after disconnect")
+{
+    // Regression test for bitcoin/bitcoin#35845. Disconnecting a connection
+    // cancels the KJ promise of an in-flight call, but a C++ server method
+    // body already dispatched to a worker thread runs to completion. Verify
+    // that Connection::waitDrained() blocks until such a body finishes and its
+    // server object is destroyed, so shutdown code can wait for a disconnected
+    // connection to become quiescent before freeing state the body accesses.
+
+    std::promise<void> body_started, release_body;
+    TestSetup setup;
+    ProxyClient<messages::FooInterface>* foo = setup.client.get();
+    foo->initThreadMap();
+
+    // A server call body that signals when it starts and then blocks until the
+    // test releases it, so the in-flight state can be observed
+    // deterministically.
+    setup.server->m_impl->m_fn = [&] {
+        body_started.set_value();
+        release_body.get_future().get();
+    };
+
+    // Grab the server Connection object on the event loop thread before
+    // disconnecting. It stays valid until server_disconnect() destroys it
+    // below.
+    Connection* connection{nullptr};
+    foo->m_context.loop->sync([&] { connection = setup.server->m_context.connection.get(); });
+
+    // Invoke the async method on a separate thread so its body blocks there
+    // while this thread makes assertions. callFnAsync() takes an mp.Context,
+    // so its body runs on a worker thread via ProxyServer<Thread>::post().
+    std::thread call_thread([&] {
+        EXPECT_EXCEPTION(foo->callFnAsync(), "IPC client method call interrupted by disconnect.");
+    });
+    body_started.get_future().get();
+
+    // The FooInterface server object is the connection's only counted server
+    // object, and its call body is executing.
+    KJ_EXPECT(connection->pendingServerObjects() == 1);
+
+    // Disconnect. This cancels the call's promise (the client above sees the
+    // disconnect error), but the body is still blocked on the worker thread,
+    // so its server object must still be alive.
+    foo->m_context.loop->sync([&] { connection->disconnect(); });
+    KJ_EXPECT(connection->pendingServerObjects() == 1);
+
+    // A drain must block while the body runs and return only once it
+    // finishes, which is what Ipc::disconnectIncoming relies on during
+    // shutdown.
+    std::atomic<bool> drained{false};
+    std::thread drain_thread([&] {
+        connection->waitDrained();
+        drained = true;
+    });
+
+    // The body is still blocked, so waitDrained() must not have returned.
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    KJ_EXPECT(!drained);
+
+    // Let the body finish; the drain should now complete.
+    release_body.set_value();
+    drain_thread.join();
+    KJ_EXPECT(drained);
+    KJ_EXPECT(connection->pendingServerObjects() == 0);
+    call_thread.join();
+
+    // Destroy the drained connection. (~Connection notices disconnect() has
+    // already run and does not tear things down twice.)
+    setup.server_disconnect();
+}
+
 KJ_TEST("Destroying ProxyClient<> with destroy method after peer disconnect")
 {
     // Regression test for bitcoin-core/libmultiprocess#219 where
@@ -466,8 +555,8 @@ KJ_TEST("Make simultaneous IPC calls on single remote thread")
     Thread::Client *callback_thread, *request_thread;
     foo->m_context.loop->sync([&] {
         Lock lock(tc.waiter->m_mutex);
-        callback_thread = &tc.callback_threads.at(foo->m_context.connection)->m_client;
-        request_thread = &tc.request_threads.at(foo->m_context.connection)->m_client;
+        callback_thread = &tc.callback_threads.at(foo->m_context.connection.get())->m_client;
+        request_thread = &tc.request_threads.at(foo->m_context.connection.get())->m_client;
     });
 
     // Call callIntFnAsync 3 times with n=100, 200, 300
