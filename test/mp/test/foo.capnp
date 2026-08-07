@@ -66,6 +66,7 @@ struct FooStruct $Proxy.wrap("mp::test::FooStruct") {
 struct FooCustom $Proxy.wrap("mp::test::FooCustom") {
     v1 @0 :Text;
     v2 @1 :Int32;
+    v3 @2 :List(Int32);
 }
 
 struct FooEmpty $Proxy.wrap("mp::test::FooEmpty") {

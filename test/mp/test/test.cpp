@@ -233,9 +233,11 @@ KJ_TEST("Call FooInterface methods")
     FooCustom custom_in;
     custom_in.v1 = "v1";
     custom_in.v2 = 5;
+    custom_in.v3 = {10, 20, 30};
     FooCustom custom_out = foo->passCustom(custom_in);
     KJ_EXPECT(custom_in.v1 == custom_out.v1);
     KJ_EXPECT(custom_in.v2 == custom_out.v2);
+    KJ_EXPECT(custom_in.v3 == custom_out.v3);
 
     foo->passEmpty(FooEmpty{});
 

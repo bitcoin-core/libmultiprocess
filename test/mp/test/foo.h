@@ -34,6 +34,7 @@ struct FooCustom
 {
     std::string v1;
     int v2;
+    std::vector<int> v3;
 };
 
 struct FooEmpty
