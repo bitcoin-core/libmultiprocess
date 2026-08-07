@@ -247,35 +247,70 @@ void Unlock(Lock& lock, Callback&& callback)
     callback();
 }
 
-//! Invoke a function and run a follow-up action before returning the original
-//! result.
+//! Uninitialized aligned storage for a single T value. Provides a ptr()
+//! accessor to avoid repeated reinterpret_cast/std::launder boilerplate.
+template <typename T>
+struct AlignedStorage {
+    alignas(T) std::byte data[sizeof(T)];
+    T* ptr() { return std::launder(reinterpret_cast<T*>(data)); }
+    const T* ptr() const { return std::launder(reinterpret_cast<const T*>(data)); }
+};
+
+//! Invoke fn() then run an after() callback. Like KJ_DEFER but works better
+//! when after() can throw: avoids clang bug
+//! https://github.com/llvm/llvm-project/issues/12658 which skips destructors,
+//! and when both functions throw lets one exception take precedence.
 //!
-//! This can be used similarly to KJ_DEFER to run cleanup code, but works better
-//! if the cleanup function can throw because it avoids clang bug
-//! https://github.com/llvm/llvm-project/issues/12658 which skips calling
-//! destructors in that case and can lead to memory leaks. Also, if both
-//! functions throw, this lets one exception take precedence instead of
-//! terminating due to having two active exceptions.
+//! after() always receives a pointer whose nullness indicates fn()'s outcome:
+//! - Non-null if fn() returned normally. Pointer type and value depend on R:
+//!   - void: std::true_type* (points to AlignedStorage<std::true_type>)
+//!   - lvalue reference T&: T* pointing to the referenced object
+//!   - value type T: T* pointing to result in AlignedStorage<T>; C++17
+//!     guaranteed copy elision constructs it in place from the prvalue so no
+//!     move or copy constructor is required (handles non-movable types)
+//! - Null if fn() threw; after() is still called so it can do cleanup.
+//! If after() throws, its exception takes precedence over any fn() exception.
 template <typename Fn, typename After>
-decltype(auto) TryFinally(Fn&& fn, After&& after)
+void TryFinally(Fn&& fn, After&& after)
 {
     bool success{false};
     using R = std::invoke_result_t<Fn>;
-    try {
-        if constexpr (std::is_void_v<R>) {
-            std::forward<Fn>(fn)();
+    if constexpr (std::is_lvalue_reference_v<R>) {
+        // Lvalue reference return: pass pointer to the referenced object; no
+        // storage needed since the object's lifetime is managed by the caller.
+        using StorageT = std::remove_reference_t<R>;
+        try {
+            StorageT* ptr = &std::forward<Fn>(fn)();
             success = true;
-            std::forward<After>(after)();
-            return;
-        } else {
-            decltype(auto) result = std::forward<Fn>(fn)();
-            success = true;
-            std::forward<After>(after)();
-            return result;
+            std::forward<After>(after)(ptr);
+        } catch (...) {
+            if (!success) std::forward<After>(after)(static_cast<StorageT*>(nullptr));
+            throw;
         }
-    } catch (...) {
-        if (!success) std::forward<After>(after)();
-        throw;
+    } else {
+        // Value (or rvalue-reference or void) return. void is mapped to
+        // std::true_type so the same AlignedStorage pattern covers all cases.
+        // remove_reference_t handles the rvalue-reference sub-case (move-constructed).
+        using StorageT = std::conditional_t<std::is_void_v<R>, std::true_type, std::remove_reference_t<R>>;
+        AlignedStorage<StorageT> storage;
+        bool constructed{false};
+        try {
+            if constexpr (std::is_void_v<R>) {
+                std::forward<Fn>(fn)();
+                new (storage.ptr()) StorageT{};
+            } else {
+                new (storage.ptr()) StorageT(std::forward<Fn>(fn)());  // C++17 guaranteed copy elision
+            }
+            constructed = true;
+            success = true;
+            std::forward<After>(after)(storage.ptr());
+            storage.ptr()->~StorageT();
+            constructed = false;
+        } catch (...) {
+            if (constructed) storage.ptr()->~StorageT();
+            if (!success) std::forward<After>(after)(static_cast<StorageT*>(nullptr));
+            throw;
+        }
     }
 }
 

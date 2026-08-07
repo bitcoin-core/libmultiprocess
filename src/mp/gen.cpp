@@ -552,8 +552,10 @@ static void Generate(kj::StringPtr src_prefix,
 
                 std::ostringstream client_args;
                 std::ostringstream client_invoke;
+                std::string client_invoke_return;
                 std::ostringstream server_invoke_start;
                 std::ostringstream server_invoke_end;
+                std::string server_ret_accessor;
                 int argc = 0;
                 for (const auto& field : fields.fields) {
                     if (field.skip) continue;
@@ -578,32 +580,28 @@ static void Generate(kj::StringPtr src_prefix,
 
                         ++argc;
                     }
-                    client_invoke << ", ";
-
                     if (field.exception.size()) {
-                        client_invoke << "ClientException<" << field.exception << ", ";
-                    } else {
-                        client_invoke << "MakeClientParam<";
-                    }
-
-                    client_invoke << AccessorType(base_name, field) << ">(";
-
-                    if (field.retval) {
-                        client_invoke << field_name;
-                    } else {
-                        client_invoke << fwd_args.str();
-                    }
-                    client_invoke << ")";
-
-                    if (field.exception.size()) {
-                        server_invoke_start << "Make<ServerExcept, " << field.exception;
+                        client_invoke << ", ClientException<" << field.exception << ", "
+                                      << AccessorType(base_name, field) << ">()";
                     } else if (field.retval) {
-                        server_invoke_start << "Make<ServerRet";
+                        client_invoke_return = "<typename M" + std::to_string(method_ordinal) + "::Result, " +
+                                               AccessorType(base_name, field) + ">";
                     } else {
-                        server_invoke_start << "MakeServerField<" << field.args;
+                        client_invoke << ", MakeClientParam<" << AccessorType(base_name, field) << ">("
+                                      << fwd_args.str() << ")";
                     }
-                    server_invoke_start << ", " << AccessorType(base_name, field) << ">(";
-                    server_invoke_end << ")";
+
+                    if (field.exception.size()) {
+                        server_invoke_start << "Make<ServerExcept, " << field.exception
+                                            << ", " << AccessorType(base_name, field) << ">(";
+                        server_invoke_end << ")";
+                    } else if (field.retval) {
+                        server_ret_accessor = AccessorType(base_name, field);
+                    } else {
+                        server_invoke_start << "MakeServerField<" << field.args
+                                            << ", " << AccessorType(base_name, field) << ">(";
+                        server_invoke_end << ")";
+                    }
                 }
 
                 const std::string static_str{is_construct || is_destroy ? "static " : ""};
@@ -618,12 +616,11 @@ static void Generate(kj::StringPtr src_prefix,
                 def_client << "ProxyClient<" << message_namespace << "::" << node_name << ">::M" << method_ordinal
                            << "::Result ProxyClient<" << message_namespace << "::" << node_name << ">::" << method_name
                            << "(" << super_str << client_args.str() << ") {\n";
-                if (fields.has_result) {
-                    def_client << "    typename M" << method_ordinal << "::Result result;\n";
-                }
-                def_client << "    clientInvoke(" << self_str << ", &" << message_namespace << "::" << node_name
-                           << "::Client::" << method_name << "Request" << client_invoke.str() << ");\n";
-                if (fields.has_result) def_client << "    return result;\n";
+                if (fields.has_result) def_client << "    return ";
+                else def_client << "    ";
+                def_client << "clientInvoke" << client_invoke_return << "(" << self_str << ", &" << message_namespace
+                           << "::" << node_name << "::Client::" << method_name << "Request"
+                           << client_invoke.str() << ");\n";
                 def_client << "}\n";
 
                 server << "    kj::Promise<void> " << method_name << "(" << Cap(method_name)
@@ -636,8 +633,10 @@ static void Generate(kj::StringPtr src_prefix,
                            << server_invoke_start.str();
                 if (is_destroy) {
                     def_server << "ServerDestroy()";
+                } else if (server_ret_accessor.empty()) {
+                    def_server << "ServerCall<void>()";
                 } else {
-                    def_server << "ServerCall()";
+                    def_server << "ServerCall<" << server_ret_accessor << ">()";
                 }
                 def_server << server_invoke_end.str() << ");\n}\n";
                 ++method_ordinal;

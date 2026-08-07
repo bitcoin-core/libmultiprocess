@@ -40,6 +40,19 @@ struct FooEmpty
 {
 };
 
+// Test type that has no default constructor and cannot be copied or moved.
+// Used to stress-test the serialization framework's ReadDestTemp path.
+template <typename T>
+struct Pinned {
+    T value;
+    explicit Pinned(T v) : value(std::move(v)) {}
+    Pinned() = delete;
+    Pinned(const Pinned&) = delete;
+    Pinned& operator=(const Pinned&) = delete;
+    Pinned(Pinned&&) = delete;
+    Pinned& operator=(Pinned&&) = delete;
+};
+
 struct FooMessage
 {
     std::string message;
@@ -83,6 +96,8 @@ public:
     int callbackSaved(int arg) { return m_callback->call(arg); }
     int callbackExtended(ExtendedCallback& callback, int arg) { return callback.callExtended(arg); }
     FooCustom passCustom(FooCustom foo) { return foo; }
+    Pinned<std::vector<int>> returnPinned(std::vector<int> vec) { return Pinned<std::vector<int>>{std::move(vec)}; }
+    void throwPinned(std::vector<int> vec) { throw Pinned<std::vector<int>>{std::move(vec)}; }
     FooEmpty passEmpty(FooEmpty foo) { return foo; }
     FooData passData(FooData foo) { return foo; }
     FooMessage passMessage(FooMessage foo) { foo.message += " call"; return foo; }
