@@ -326,7 +326,7 @@ auto PassField(Priority<1>, TypeList<LocalType&>, ServerContext& server_context,
     const auto& params = server_context.call_context.getParams();
     const auto& input = Make<StructField, Accessor>(params);
     using Interface = typename Decay<decltype(input.get())>::Calls;
-    auto param = std::make_unique<ProxyClient<Interface>>(input.get(), server_context.proxy_server.m_context.connection, false);
+    auto param = std::make_unique<ProxyClient<Interface>>(input.get(), server_context.proxy_server.m_context.connection.get(), false);
     fn.invoke(server_context, std::forward<Args>(args)..., *param);
 }
 
@@ -715,7 +715,12 @@ void clientInvoke(ProxyClient& proxy_client, const GetRequest& get_request, Fiel
     bool done = false;
     const char* disconnected = nullptr;
     proxy_client.m_context.loop->sync([&]() {
-        if (!proxy_client.m_context.connection) {
+        // Fail immediately on a disconnected connection instead of trying to
+        // send a request through it. (The connection object itself is always
+        // valid, since m_context holds shared ownership of it.) The
+        // m_disconnected flag is only written and read on the event loop
+        // thread, which this sync() callback runs on.
+        if (proxy_client.m_context.connection->m_disconnected) {
             const Lock lock(thread_context.waiter->m_mutex);
             done = true;
             disconnected = "IPC client method called after disconnect.";

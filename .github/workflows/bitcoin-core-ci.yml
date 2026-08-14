@@ -18,7 +18,8 @@ concurrency:
 
 env:
   BITCOIN_REPO: bitcoin/bitcoin
-  BITCOIN_CORE_REF: refs/heads/master
+  # Temporary: use PR #35932 until it merges; revert to refs/heads/master after
+  BITCOIN_CORE_REF: refs/pull/35932/merge
   LLVM_VERSION: 22
   LIBCXX_DIR: /tmp/libcxx-build/
 
