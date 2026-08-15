@@ -3,9 +3,9 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "common.h"
-#include "unixlistener.h"
 #include <mp/test/foo.capnp.h>
 #include <mp/test/foo.capnp.proxy.h>
+#include <mp/test/socketlistener.h>
 
 #include <chrono>
 #include <compare>
@@ -26,7 +26,6 @@
 #include <optional>
 #include <string>
 #include <thread>
-#include <unistd.h>
 
 namespace mp {
 namespace test {
@@ -40,7 +39,7 @@ constexpr auto FAILURE_TIMEOUT = std::chrono::seconds{30};
 class ClientSetup
 {
 public:
-    explicit ClientSetup(int fd)
+    explicit ClientSetup(SocketId fd)
         : thread([this, fd] {
               EventLoop loop("mptest-client", DefaultLogHandler);
               client_promise.set_value(ConnectStream<messages::FooInterface>(loop, MakeStream(loop, fd)));
@@ -132,7 +131,7 @@ public:
         KJ_REQUIRE(matched);
     }
 
-    UnixListener listener;
+    SocketListener listener;
     std::promise<void> ready_promise;
     std::optional<EventLoopRef> m_loop_ref;
     Mutex counter_mutex;
@@ -241,8 +240,8 @@ KJ_TEST("ListenConnections handles a client that disconnects before being accept
 
     // This is racy, if the close does not happen before accept(),
     // the connection is accepted normally.
-    int fd = server.listener.MakeConnectedSocket();
-    KJ_SYSCALL(close(fd));
+    SocketId fd = server.listener.MakeConnectedSocket();
+    CloseSocket(fd);
 
     // Wait for the connection to either be accepted and disconnected, or fail
     // to be accepted and log the error above.

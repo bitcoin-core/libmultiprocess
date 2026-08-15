@@ -12,24 +12,63 @@
 #include <chrono>
 #include <compare>
 #include <condition_variable>
-#include <csignal>
 #include <cstdlib>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <sys/wait.h>
 #include <thread>
 #include <tuple>
-#include <unistd.h>
 #include <utility>
 #include <vector>
+
+#ifdef WIN32
+#include <atomic>
+#else
+#include <csignal>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace mp {
 namespace test {
 namespace {
 
 constexpr auto FAILURE_TIMEOUT = std::chrono::seconds{30};
+
+#ifdef WIN32
+KJ_TEST("SpawnProcess does not hang if child never connects to named pipe")
+{
+    // Without FILE_FLAG_OVERLAPPED on the named pipe, ConnectNamedPipe blocks
+    // forever if the child exits without opening the pipe. Verify SpawnProcess
+    // detects child exit and throws instead of hanging.
+    //
+    // Run in a detached thread so the test suite times out and reports a failure
+    // instead of hanging indefinitely if the bug is reintroduced.
+    std::atomic<bool> done{false};
+    std::thread t([&done] {
+        try {
+            auto [process, socket]{SpawnProcess([](std::string) -> std::vector<std::string> {
+                // A child that exits immediately without opening the named pipe.
+                return {"cmd.exe", "/c", "exit 0"};
+            })};
+            CloseHandle(process);
+            CloseSocket(socket);
+        } catch (...) {
+            // Throwing is the expected outcome; blocking forever is not.
+        }
+        done.store(true, std::memory_order_relaxed);
+    });
+    t.detach();
+
+    const auto deadline{std::chrono::steady_clock::now() + FAILURE_TIMEOUT};
+    while (!done.load(std::memory_order_relaxed) && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    KJ_EXPECT(done.load(std::memory_order_relaxed), "SpawnProcess hung waiting for child that never connected");
+}
+#else
 
 // Poll for child process exit using waitpid(..., WNOHANG) until the child exits
 // or timeout expires. Returns true if the child exited and status_out was set.
@@ -50,13 +89,14 @@ static bool WaitPidWithTimeout(ProcessId pid, std::chrono::milliseconds timeout,
     return false;
 }
 
-} // namespace
-
 KJ_TEST("SpawnProcess does not run callback in child")
 {
     // This test is designed to fail deterministically if fd_to_args is invoked
     // in the post-fork child: a mutex held by another parent thread at fork
     // time appears locked forever in the child.
+    //
+    // This test is Unix-only: Windows uses CreateProcess (not fork), so the
+    // inherited-locked-mutex hazard does not apply there.
     std::mutex target_mutex;
     std::mutex control_mutex;
     std::condition_variable control_cv;
@@ -95,7 +135,7 @@ KJ_TEST("SpawnProcess does not run callback in child")
         control_cv.notify_one();
     });
 
-    const auto [pid, socket]{SpawnProcess([&](SpawnConnectInfo connect_info) -> std::vector<std::string> {
+    const auto [pid, socket]{SpawnProcess([&](std::string connect_info) -> std::vector<std::string> {
         // If this callback runs in the post-fork child, target_mutex appears
         // locked forever (the owning thread does not exist), so this deadlocks.
         std::lock_guard<std::mutex> g(target_mutex);
@@ -122,7 +162,7 @@ KJ_TEST("SpawnProcess does not run callback in child")
 KJ_TEST("SpawnProcess throws on execvp failure")
 {
     try {
-        SpawnProcess([&](SpawnConnectInfo) -> std::vector<std::string> {
+        SpawnProcess([&](std::string) -> std::vector<std::string> {
             return {"/nonexistent/binary"};
         });
         KJ_EXPECT(false, "expected SpawnProcess to throw");
@@ -131,5 +171,7 @@ KJ_TEST("SpawnProcess throws on execvp failure")
         KJ_EXPECT(std::string_view{e.what()}.find("execvp") != std::string_view::npos);
     }
 }
+#endif // !WIN32
+} // namespace
 } // namespace test
 } // namespace mp
