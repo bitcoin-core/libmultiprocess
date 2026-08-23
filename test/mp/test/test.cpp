@@ -542,7 +542,7 @@ KJ_TEST("Calling async IPC method, with server disconnect after cleanup")
     // Use testing_hook_async_request_done to trigger a disconnect from the
     // worker thread after it executes an async request but before it returns.
     // Without the bugfix, the m_on_cancel callback would be called at this
-    // point, accessing the cancel_mutex stack variable that had gone out of
+    // point, accessing the request_mutex stack variable that had gone out of
     // scope.
     TestSetup setup;
     ProxyClient<messages::FooInterface>* foo = setup.client.get();

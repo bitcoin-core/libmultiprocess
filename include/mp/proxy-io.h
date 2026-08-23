@@ -58,11 +58,11 @@ struct ServerInvokeContext : InvokeContext
     //! results structs if the request is canceled while the worker thread is
     //! reading params (`call_context.getParams()`) or writing results
     //! (`call_context.getResults()`).
-    Lock* cancel_lock{nullptr};
+    Lock* request_lock{nullptr};
     //! For IPC methods that execute asynchronously, not on the event-loop
     //! thread, this is set to true if the IPC call was canceled by the client
     //! or canceled by a disconnection. If the call runs on the event-loop
-    //! thread, it can't be canceled. This should be accessed with cancel_lock
+    //! thread, it can't be canceled. This should be accessed with request_lock
     //! held if it is not null, since in the asynchronous case it is accessed
     //! from multiple threads.
     bool request_canceled{false};

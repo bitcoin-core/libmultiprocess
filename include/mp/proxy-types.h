@@ -580,7 +580,7 @@ struct ServerCall
     template <typename ServerContext, typename... Extra, typename... Args>
     decltype(auto) invoke(ServerContext& server_context, TypeList<Extra...>, Args&&... args) const
     {
-        // Construct the extra parameters before cancel_lock is released below.
+        // Construct the extra parameters before request_lock is released below.
         // CustomReadExtraParam overloads build values from the request being
         // executed, so they need the same protection as normal capnp fields
         // from the event loop deleting request state on cancellation.
@@ -589,14 +589,14 @@ struct ServerCall
                       "Declare extra parameters with $Proxy.extraParam in the Cap'n Proto schema and add a matching "
                       "`CustomReadExtraParam` overload.");
         std::tuple<RemoveCvRef<Extra>...> extra{CustomReadExtraParam(TypeList<RemoveCvRef<Extra>>(), server_context)...};
-        // If cancel_lock is set, release it while executing the method, and
+        // If request_lock is set, release it while executing the method, and
         // reacquire it afterwards. The lock is needed to prevent params and
         // response structs from being deleted by the event loop thread if the
         // request is canceled, so it is only needed before and after method
         // execution. It is important to release the lock during execution
         // because the method can take arbitrarily long to return and the event
         // loop will need the lock itself in on_cancel if the call is canceled.
-        if (server_context.cancel_lock) server_context.cancel_lock->m_lock.unlock();
+        if (server_context.request_lock) server_context.request_lock->m_lock.unlock();
         return TryFinally(
             [&]() -> decltype(auto) {
                 return std::apply(
@@ -608,7 +608,7 @@ struct ServerCall
                     extra);
             },
             [&] {
-                if (server_context.cancel_lock) server_context.cancel_lock->m_lock.lock();
+                if (server_context.request_lock) server_context.request_lock->m_lock.lock();
                 // If the IPC request was canceled, throw InterruptException
                 // because there is no point continuing and trying to fill the
                 // call_context.getResults() struct. It's also important to stop
