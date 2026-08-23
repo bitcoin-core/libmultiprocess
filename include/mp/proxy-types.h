@@ -8,6 +8,9 @@
 #include <mp/proxy-io.h>
 
 #include <exception>
+#include <kj/async.h>
+#include <kj/common.h>
+#include <kj/memory.h>
 #include <optional>
 #include <set>
 #include <typeindex>
@@ -806,7 +809,18 @@ void clientInvoke(ProxyClient& proxy_client, const GetRequest& get_request, Fiel
         MP_LOGPLAIN(*proxy_client.m_context.loop, Log::Trace)
             << "send data: " << LogEscape(request.toString(), proxy_client.m_context.loop->m_log_opts.max_chars);
 
-        proxy_client.m_context.loop->m_task_set->add(request.send().then(
+        kj::Promise<::capnp::Response<typename Request::Results>> promise{request.send()};
+
+        // If `set_canceler` was set, construct a kj::Canceler object and wrap
+        // the request promise with it.
+        kj::Own<kj::Canceler> canceler;
+        if (invoke_context->set_canceler) {
+            canceler = kj::heap<kj::Canceler>();
+            promise = canceler->wrap(kj::mv(promise));
+            invoke_context->set_canceler(canceler.get());
+        }
+
+        proxy_client.m_context.loop->m_task_set->add(promise.then(
             [&](::capnp::Response<typename Request::Results>&& response) {
                 MP_LOGPLAIN(*proxy_client.m_context.loop, Log::Debug)
                     << "{" << thread_context.thread_name << "} IPC client recv "
@@ -824,7 +838,16 @@ void clientInvoke(ProxyClient& proxy_client, const GetRequest& get_request, Fiel
                 thread_context.waiter->m_cv.notify_all();
             },
             [&](const ::kj::Exception& e) {
-                if (e.getType() == ::kj::Exception::Type::DISCONNECTED) {
+                if (invoke_context->handle_error) {
+                    try {
+                        invoke_context->handle_error(e);
+                    } catch (...) {
+                        exception = std::current_exception();
+                    }
+                }
+                if (exception) {
+                    // Rethrown below.
+                } else if (e.getType() == ::kj::Exception::Type::DISCONNECTED) {
                     disconnected = "IPC client method call interrupted by disconnect.";
                 } else {
                     kj_exception = kj::str("kj::Exception: ", e).cStr();
@@ -834,7 +857,12 @@ void clientInvoke(ProxyClient& proxy_client, const GetRequest& get_request, Fiel
                 const Lock lock(thread_context.waiter->m_mutex);
                 done = true;
                 thread_context.waiter->m_cv.notify_all();
-            }));
+            }).attach(kj::defer([canceler = kj::mv(canceler), set_canceler = invoke_context->set_canceler] {
+                // Runs on the event loop thread when the request promise is
+                // destroyed. Tell the cancellation parameter the canceler is
+                // about to go away.
+                if (set_canceler) set_canceler(nullptr);
+            })));
     });
 
     Lock lock(thread_context.waiter->m_mutex);

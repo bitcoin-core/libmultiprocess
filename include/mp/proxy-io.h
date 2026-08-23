@@ -18,6 +18,8 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <functional>
+#include <kj/async.h>
+#include <kj/exception.h>
 #include <kj/function.h>
 #include <kj/io.h>
 #include <map>
@@ -39,6 +41,17 @@ struct InvokeContext
 struct ClientInvokeContext : InvokeContext
 {
     ThreadContext& thread_context;
+    //! Callback that overloads can set while building a parameter to make a
+    //! function call cancelable. If set, clientInvoke calls it on the event loop
+    //! thread with the kj::Canceler object wrapping the request when the request is
+    //! sent, and with null when the request finishes and the canceler is destroyed.
+    std::function<void(kj::Canceler*)> set_canceler;
+    //! Callback that lets clients set a custom error handler for kj::Exception.
+    //! For example, a canceled request fails the same way a disconnect does,
+    //! and this is where the cancellation parameter can throw its own
+    //! exception instead. If set, clientInvoke calls it and rethrows anything
+    //! it throws.
+    std::function<void(const kj::Exception&)> handle_error;
     ClientInvokeContext(Connection& conn, ThreadContext& thread_context)
         : InvokeContext{conn}, thread_context{thread_context}
     {
