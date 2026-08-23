@@ -794,6 +794,22 @@ void clientInvoke(ProxyClient& proxy_client, const GetRequest& get_request, Fiel
     std::string kj_exception;
     bool done = false;
     const char* disconnected = nullptr;
+    const char* canceled = nullptr;
+
+    // Cancellation state, should be accessed only on the event loop thread.
+    //
+    // - `canceler_ptr` points to a kj::Canceler created immediately after the
+    //   request is sent, and only when clientInvoke is cancelable. It is cleared
+    //   when the request finishes.
+    // - `cancel_requested` indicates that the caller requested cancellation.
+    //   It is set only while the request is in flight.
+    kj::Canceler* canceler_ptr = nullptr;
+    bool cancel_requested = false;
+
+    // Moved from `ClientInvokeContext::stop_token`. The stop callback is
+    // registered on it after sync() returns.
+    std::stop_token stop_token;
+
     proxy_client.m_context.loop->sync([&]() {
         if (!proxy_client.m_context.connection) {
             const Lock lock(thread_context.waiter->m_mutex);
@@ -814,8 +830,20 @@ void clientInvoke(ProxyClient& proxy_client, const GetRequest& get_request, Fiel
         MP_LOGPLAIN(*proxy_client.m_context.loop, Log::Trace)
             << "send data: " << LogEscape(request.toString(), proxy_client.m_context.loop->m_log_opts.max_chars);
 
-        proxy_client.m_context.loop->m_task_set->add(request.send().then(
-            [&](::capnp::Response<typename Request::Results>&& response) {
+        kj::Promise<::capnp::Response<typename Request::Results>> promise{request.send()};
+
+        // If invoke_context.stop_token is set, wrap the request promise in a
+        // kj::Canceler so the stop callback registered below can cancel it.
+        kj::Own<kj::Canceler> canceler;
+        if (invoke_context->stop_token.stop_possible()) {
+            canceler = kj::heap<kj::Canceler>();
+            promise = canceler->wrap(kj::mv(promise));
+            canceler_ptr = canceler.get();
+            stop_token = std::move(invoke_context->stop_token);
+        }
+
+        kj::Promise<void> task{promise.then([&](::capnp::Response<typename Request::Results>&& response) {
+                canceler_ptr = nullptr;
                 MP_LOGPLAIN(*proxy_client.m_context.loop, Log::Debug)
                     << "{" << thread_context.thread_name << "} IPC client recv "
                     << TypeName<typename Request::Results>();
@@ -832,7 +860,10 @@ void clientInvoke(ProxyClient& proxy_client, const GetRequest& get_request, Fiel
                 thread_context.waiter->m_cv.notify_all();
             },
             [&](const ::kj::Exception& e) {
-                if (e.getType() == ::kj::Exception::Type::DISCONNECTED) {
+                canceler_ptr = nullptr;
+                if (cancel_requested) {
+                    canceled = "IPC client method call interrupted by cancel.";
+                } else if (e.getType() == ::kj::Exception::Type::DISCONNECTED) {
                     disconnected = "IPC client method call interrupted by disconnect.";
                 } else {
                     kj_exception = kj::str("kj::Exception: ", e).cStr();
@@ -842,14 +873,36 @@ void clientInvoke(ProxyClient& proxy_client, const GetRequest& get_request, Fiel
                 const Lock lock(thread_context.waiter->m_mutex);
                 done = true;
                 thread_context.waiter->m_cv.notify_all();
-            }));
+        })};
+        if (canceler) task = task.attach(kj::mv(canceler));
+        proxy_client.m_context.loop->m_task_set->add(kj::mv(task));
     });
+
+    // Register the stop callback after the request is sent.
+    // If stop was already requested, the constructor runs the callback
+    // immediately.
+    auto cancel{[&] {
+        // The stop callback can run on any thread. Schedule the cancellation
+        // state access on the event loop thread via sync().
+        proxy_client.m_context.loop->sync([&] {
+            // Do nothing if the request already finished, or if its result is
+            // already queued and the canceler no longer wraps it.
+            if (!canceler_ptr || canceler_ptr->isEmpty()) return;
+            cancel_requested = true;
+            canceler_ptr->cancel("IPC client method call canceled.");
+        });
+    }};
+    // Since the callback accesses the cancellation state above,
+    // stop_callback is declared after it so it is destroyed first.
+    std::optional<std::stop_callback<decltype(cancel)>> stop_callback;
+    if (stop_token.stop_possible()) stop_callback.emplace(stop_token, cancel);
 
     Lock lock(thread_context.waiter->m_mutex);
     thread_context.waiter->wait(lock, [&done]() { return done; });
     if (exception) std::rethrow_exception(exception);
     if (!kj_exception.empty()) MP_LOGPLAIN(*proxy_client.m_context.loop, Log::Raise) << kj_exception;
     if (disconnected) MP_LOGPLAIN(*proxy_client.m_context.loop, Log::Raise) << disconnected;
+    if (canceled) MP_LOGPLAIN(*proxy_client.m_context.loop, Log::Raise) << canceled;
 }
 
 //! Invoke callable `fn()` that may return void. If it does return void, replace

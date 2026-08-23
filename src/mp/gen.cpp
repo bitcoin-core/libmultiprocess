@@ -348,6 +348,7 @@ static void Generate(kj::StringPtr src_prefix,
     cpp_client << "#include <mp/proxy.h>\n";
     cpp_client << "#include <mp/proxy-io.h>\n";
     cpp_client << "#include <mp/util.h>\n";
+    cpp_client << "#include <stop_token>\n";
     cpp_client << "#include <string>\n";
     cpp_client << "#include <vector>\n";
     cpp_client << "#include <" << PROXY_TYPES << ">\n";

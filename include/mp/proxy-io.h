@@ -25,6 +25,7 @@
 #include <optional>
 #include <ranges>
 #include <sstream>
+#include <stop_token>
 #include <string>
 #include <thread>
 
@@ -40,6 +41,10 @@ struct InvokeContext
 struct ClientInvokeContext : InvokeContext
 {
     ThreadContext& thread_context;
+    //! Token that makes the call cancelable. Build overloads can set it while
+    //! building a parameter. If it is set and stop is requested before the
+    //! call returns, clientInvoke cancels the request and throws.
+    std::stop_token stop_token;
     ClientInvokeContext(Connection& conn, ThreadContext& thread_context)
         : InvokeContext{conn}, thread_context{thread_context}
     {
