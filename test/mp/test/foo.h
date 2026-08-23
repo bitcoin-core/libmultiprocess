@@ -112,6 +112,7 @@ public:
     FooEnum passEnum(FooEnum foo) { return foo; }
     double passDouble(double value) { return value; }
     int passFn(std::function<int()> fn) { return fn(); }
+    int passExtra(int arg, int extra) { return arg + extra; }
     std::vector<FooDataRef> passDataPointers(std::vector<FooDataRef> values) { return values; }
     std::vector<std::unique_ptr<Bar>> listBars(int n)
     {

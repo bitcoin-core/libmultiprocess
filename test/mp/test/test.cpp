@@ -268,6 +268,15 @@ KJ_TEST("Call FooInterface methods")
 
     KJ_EXPECT(foo->passFn([]{ return 10; }) == 10);
 
+    // The `CustomReadExtraParam` overload in `foo-types.h` builds the
+    // server-side value, hardcoded to 1. As a result this always returns
+    // arg + 1 regardless of the value passed for extra.
+    int client_extra{0};
+    foo->m_context.loop->testing_hook_misc = [&](std::any value) { client_extra = std::any_cast<int>(value); };
+    KJ_EXPECT(foo->passExtra(1, 999) == 2);
+    KJ_EXPECT(client_extra == 999);
+    foo->m_context.loop->testing_hook_misc = nullptr;
+
     // Recursive async IPC calls
     KJ_EXPECT(foo->passFn([foo]{
         return foo->passFn([]{ return 1; });
