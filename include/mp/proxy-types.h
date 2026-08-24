@@ -612,6 +612,9 @@ struct ServerCall
             },
             [&] {
                 if (server_context.request_lock) server_context.request_lock->m_lock.lock();
+                // The method returned, so destroy the callback it registered
+                // through its cancellation argument, if any.
+                server_context.cancel_fn = nullptr;
                 // If the IPC request was canceled, throw InterruptException
                 // because there is no point continuing and trying to fill the
                 // call_context.getResults() struct. It's also important to stop

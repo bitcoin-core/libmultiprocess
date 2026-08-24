@@ -73,12 +73,20 @@ struct ServerInvokeContext : InvokeContext
     //! (`call_context.getResults()`).
     Lock* request_lock{nullptr};
     //! For IPC methods that execute asynchronously, not on the event-loop
+    //! thread: mutex request_lock refers to, set together with it. Null for
+    //! methods executing on the event-loop thread.
+    Mutex* request_mutex{nullptr};
+    //! For IPC methods that execute asynchronously, not on the event-loop
     //! thread, this is set to true if the IPC call was canceled by the client
     //! or canceled by a disconnection. If the call runs on the event-loop
     //! thread, it can't be canceled. This should be accessed with request_lock
     //! held if it is not null, since in the asynchronous case it is accessed
     //! from multiple threads.
     bool request_canceled{false};
+    //! For IPC methods that execute asynchronously, not on the event-loop
+    //! thread: callback registered by a wrapped method. Runs when request
+    //! cancellation is detected.
+    std::function<void()> cancel_fn;
 
     ServerInvokeContext(ProxyServer& proxy_server, CallContext& call_context, int req)
         : InvokeContext{*proxy_server.m_context.connection}, proxy_server{proxy_server}, call_context{call_context}, req{req}

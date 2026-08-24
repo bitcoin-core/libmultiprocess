@@ -100,6 +100,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
         Mutex request_mutex;
         Lock request_lock{request_mutex};
         server_context.request_lock = &request_lock;
+        server_context.request_mutex = &request_mutex;
         loop.sync([&] {
             // Detect request being canceled before it executes.
             if (cancel_monitor.m_canceled) {
@@ -123,6 +124,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                 // as well before accessing the structs.
                 Lock request_lock{request_mutex};
                 server_context.request_canceled = true;
+                if (server_context.cancel_fn) server_context.cancel_fn();
             };
             // Update requests_threads map if not canceled. We know
             // the request is not canceled currently because
