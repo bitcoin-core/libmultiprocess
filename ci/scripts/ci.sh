@@ -18,8 +18,6 @@ fi
 [ -n "${CI_CLEAN-}" ] && rm -rf "${CI_DIR}"
 
 cmake --version
-cmake_ver=$(cmake --version | awk '/version/{print $3; exit}')
-ver_ge() { [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
 
 # If CAPNP_CHECKOUT was requested, clone and install requested Cap'n Proto branch or tag
 capnp_prefix=
@@ -43,13 +41,5 @@ cd "$CI_DIR"
 export CMAKE_BUILD_PARALLEL_LEVEL="$(nproc)"
 git --no-pager log -1 || true
 cmake "$src_dir" "${CMAKE_ARGS[@]+"${CMAKE_ARGS[@]}"}"
-if ver_ge "$cmake_ver" "3.15"; then
-  cmake --build . -t "${BUILD_TARGETS[@]}" -- "${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}"
-else
-  # Older versions of cmake can only build one target at a time with --target,
-  # and do not support -t shortcut
-  for t in "${BUILD_TARGETS[@]}"; do
-    cmake --build . --target "$t" -- "${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}"
-  done
-fi
+cmake --build . -t "${BUILD_TARGETS[@]}" -- "${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}"
 ctest --output-on-failure
