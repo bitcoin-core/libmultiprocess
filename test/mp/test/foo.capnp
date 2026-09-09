@@ -41,6 +41,7 @@ interface FooInterface $Proxy.wrap("mp::test::FooImplementation") {
     callMessageAsync @26 (context :Proxy.Context) -> (result :FooMessage);
     callbackFlat @27 (context :Proxy.Context, callback :FlatCallback, arg: Int32) -> (result :Int32);
     passExtra @28 (arg :Int32) -> (result :Int32) $Proxy.extraParam("extra");
+    callCancelFnAsync @29 (context :Proxy.Context) -> () $Proxy.extraParam("cancel") $Cxx.allowCancellation;
 }
 
 interface FooInit $Proxy.wrap("mp::test::FooInit") {
