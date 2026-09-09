@@ -26,10 +26,10 @@ void BuildOne(TypeList<LocalType> param,
 
 template <size_t index, typename LocalType, typename Value, typename Output>
     requires (index == ProxyType<LocalType>::fields)
-void BuildOne(TypeList<LocalType> param,
-    InvokeContext& invoke_context,
-    Output&& output,
-    Value&& value)
+void BuildOne(TypeList<LocalType>,
+    InvokeContext&,
+    Output&&,
+    Value&&)
 {
 }
 
@@ -63,10 +63,10 @@ void ReadOne(TypeList<LocalType> param,
 
 template <size_t index, typename LocalType, typename Input, typename Value>
     requires (index == ProxyType<LocalType>::fields)
-void ReadOne(TypeList<LocalType> param,
-    InvokeContext& invoke_context,
-    Input& input,
-    Value& value)
+void ReadOne(TypeList<LocalType>,
+    InvokeContext&,
+    Input&,
+    Value&)
 {
 }
 

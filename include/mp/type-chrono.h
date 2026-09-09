@@ -13,7 +13,7 @@ namespace mp {
 //! Overload CustomBuildField and CustomReadField to serialize std::chrono
 //! parameters and return values as numbers.
 template <class Rep, class Period, typename Value, typename Output>
-void CustomBuildField(TypeList<std::chrono::duration<Rep, Period>>, Priority<1>, InvokeContext& invoke_context, Value&& value,
+void CustomBuildField(TypeList<std::chrono::duration<Rep, Period>>, Priority<1>, InvokeContext&, Value&& value,
                       Output&& output)
 {
     static_assert(safe_less_equal(std::numeric_limits<decltype(output.get())>::lowest(), std::numeric_limits<Rep>::lowest()),
@@ -35,7 +35,7 @@ decltype(auto) CustomReadField(TypeList<std::chrono::duration<Rep, Period>>, Pri
 //! The capnp field type must be an integer type with enough range to hold the
 //! time_since_epoch() count for the given Duration (e.g. Int64 for nanoseconds).
 template <class Clock, class Duration, typename Value, typename Output>
-void CustomBuildField(TypeList<std::chrono::time_point<Clock, Duration>>, Priority<1>, InvokeContext& invoke_context,
+void CustomBuildField(TypeList<std::chrono::time_point<Clock, Duration>>, Priority<1>, InvokeContext&,
                       Value&& value, Output&& output)
 {
     using Rep = typename Duration::rep;
