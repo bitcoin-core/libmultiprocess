@@ -27,6 +27,7 @@
 #include <kj/test.h>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <mp/config.h>
 #include <mp/proxy.h>
 #include <mp/proxy.capnp.h>
@@ -769,6 +770,103 @@ KJ_TEST("Call async IPC method without thread or pool errors correctly")
     });
     done.get_future().get();
     KJ_EXPECT(error_thrown);
+}
+
+KJ_TEST("Cancel an in-flight IPC call")
+{
+    TestSetup setup;
+    ProxyClient<messages::FooInterface>* foo = setup.client.get();
+    foo->initThreadMap();
+    std::promise<void> waiting;
+    std::promise<void> done;
+
+    // Install a function that blocks until its `CancelArg` fires, so
+    // cancellation is the only way out.
+    setup.server->m_impl->m_cancel_fn = [&](CancelArg cancel) {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool canceled = false;
+        const CancelGuard guard{cancel([&] {
+            const std::lock_guard<std::mutex> lock{mutex};
+            canceled = true;
+            cv.notify_all();
+        })};
+        std::unique_lock<std::mutex> lock{mutex};
+        waiting.set_value();
+        cv.wait(lock, [&] { return canceled; });
+        done.set_value();
+    };
+
+    std::promise<CancelFn> cancel_fn;
+    std::thread canceler([&] {
+        CancelFn fire{cancel_fn.get_future().get()};
+        waiting.get_future().wait();
+        fire();
+    });
+    bool interrupted = false;
+    try {
+        foo->callCancelFnAsync([&](CancelFn fn) {
+            cancel_fn.set_value(std::move(fn));
+            return CancelGuard{};
+        });
+    } catch (const InterruptException&) {
+        interrupted = true;
+    }
+    canceler.join();
+    KJ_EXPECT(interrupted);
+    KJ_EXPECT(done.get_future().wait_for(std::chrono::minutes{5}) == std::future_status::ready);
+
+    // Connection should be unaffected.
+    KJ_EXPECT(foo->add(1, 2) == 3);
+}
+
+KJ_TEST("Dropping the client promise cancels an executing method")
+{
+    TestSetup setup;
+    constexpr std::chrono::seconds timeout{30};
+    std::promise<void> waiting;
+    std::promise<void> done;
+
+    // Install a function that blocks until its `CancelArg` fires, so
+    // cancellation is the only way out.
+    setup.server->m_impl->m_cancel_fn = [&](CancelArg cancel) {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool canceled = false;
+        const CancelGuard guard{cancel([&] {
+            const std::lock_guard<std::mutex> lock{mutex};
+            canceled = true;
+            cv.notify_all();
+        })};
+        std::unique_lock<std::mutex> lock{mutex};
+        waiting.set_value();
+        cv.wait(lock, [&] { return canceled; });
+        done.set_value();
+    };
+    ProxyClient<messages::FooInterface>* foo{setup.client.get()};
+    foo->initThreadMap();
+
+    // Build the request by hand, the way a non-C++ client would. A normal
+    // proxy call cannot be abandoned because `clientInvoke` blocks on it.
+    std::optional<capnp::RemotePromise<messages::FooInterface::CallCancelFnAsyncResults>> remote;
+    foo->m_context.loop->sync([&] {
+        auto request{foo->m_client.callCancelFnAsyncRequest()};
+        request.initContext().setThread(
+            foo->m_context.connection->m_thread_map.makeThreadRequest().send().getResult());
+        remote.emplace(request.send());
+    });
+    KJ_REQUIRE(waiting.get_future().wait_for(timeout) == std::future_status::ready);
+
+    auto done_future{done.get_future()};
+    KJ_EXPECT(done_future.wait_for(std::chrono::seconds{0}) == std::future_status::timeout);
+
+    // Abandon the call without disconnecting.
+    foo->m_context.loop->sync([&] { remote.reset(); });
+
+    KJ_EXPECT(done_future.wait_for(timeout) == std::future_status::ready);
+
+    // Connection should be unaffected.
+    KJ_EXPECT(foo->add(1, 2) == 3);
 }
 
 } // namespace test
