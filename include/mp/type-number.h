@@ -11,7 +11,7 @@
 namespace mp {
 template <typename LocalType, typename Value>
     requires std::is_enum_v<Value>
-LocalType BuildPrimitive(InvokeContext& invoke_context,
+LocalType BuildPrimitive(InvokeContext&,
     const Value& value,
     TypeList<LocalType>)
 {
@@ -23,7 +23,7 @@ LocalType BuildPrimitive(InvokeContext& invoke_context,
 
 template <typename LocalType, typename Value>
     requires (std::is_integral_v<Value> && !std::is_same_v<std::remove_cv_t<Value>, bool>)
-LocalType BuildPrimitive(InvokeContext& invoke_context,
+LocalType BuildPrimitive(InvokeContext&,
     const Value& value,
     TypeList<LocalType>)
 {
@@ -35,7 +35,7 @@ LocalType BuildPrimitive(InvokeContext& invoke_context,
 }
 
 template <typename LocalType>
-LocalType BuildPrimitive(InvokeContext& invoke_context, bool value, TypeList<LocalType>)
+LocalType BuildPrimitive(InvokeContext&, bool value, TypeList<LocalType>)
 {
     static_assert(std::is_same_v<LocalType, bool>,
         "capnp field type should be Bool for bool parameters. Fix the .capnp schema.");
@@ -44,7 +44,7 @@ LocalType BuildPrimitive(InvokeContext& invoke_context, bool value, TypeList<Loc
 
 template <typename LocalType, typename Value>
     requires std::is_floating_point_v<Value>
-LocalType BuildPrimitive(InvokeContext& invoke_context,
+LocalType BuildPrimitive(InvokeContext&,
     const Value& value,
     TypeList<LocalType>)
 {
@@ -57,7 +57,7 @@ template <typename LocalType, typename Input, typename ReadDest>
     requires std::is_enum_v<LocalType>
 decltype(auto) CustomReadField(TypeList<LocalType>,
     Priority<1>,
-    InvokeContext& invoke_context,
+    InvokeContext&,
     Input&& input,
     ReadDest&& read_dest)
 {
@@ -74,7 +74,7 @@ template <typename LocalType, typename Input, typename ReadDest>
     requires std::is_integral_v<LocalType>
 decltype(auto) CustomReadField(TypeList<LocalType>,
     Priority<1>,
-    InvokeContext& invoke_context,
+    InvokeContext&,
     Input&& input,
     ReadDest&& read_dest)
 {
@@ -89,7 +89,7 @@ template <typename LocalType, typename Input, typename ReadDest>
     requires std::is_floating_point_v<LocalType>
 decltype(auto) CustomReadField(TypeList<LocalType>,
     Priority<1>,
-    InvokeContext& invoke_context,
+    InvokeContext&,
     Input&& input,
     ReadDest&& read_dest)
 {
