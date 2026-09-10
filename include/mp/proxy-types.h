@@ -13,6 +13,12 @@
 #include <typeindex>
 #include <vector>
 
+// KJ exception support is required, or exceptions thrown in serverInvoke below go uncaught
+// and crash the process instead of being returned to the client as errors.
+#if KJ_NO_EXCEPTIONS
+#error "KJ_NO_EXCEPTIONS=1 is set but libmultiprocess requires support for exceptions. Please check build settings. On NetBSD you may also need to set -DKJ_NO_EXCEPTIONS=0 -DKJ_NO_RTTI=0 explicitly (https://github.com/capnproto/capnproto/pull/2756)"
+#endif
+
 namespace mp {
 
 template <typename Value>
