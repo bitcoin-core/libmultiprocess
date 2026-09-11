@@ -88,7 +88,7 @@ void EventLoopRef::reset()
     }
 }
 
-ProxyContext::ProxyContext(Connection* connection) : connection(connection), loop{*connection->m_loop} {}
+ProxyContext::ProxyContext(Connection* connection) : connection(connection->shared_from_this()), loop{*connection->m_loop} {}
 
 Connection::~Connection() noexcept(false)
 {
@@ -98,9 +98,6 @@ Connection::~Connection() noexcept(false)
     // by a TwoPartyVatNetwork::onDisconnect callback directly from the event
     // loop thread.
     assert(std::this_thread::get_id() == m_loop->m_thread_id);
-    // Expire m_alive so onDisconnect handlers, which delete Connection
-    // objects, do not run once this object is being destroyed.
-    m_alive.reset();
     disconnect();
 }
 
@@ -115,15 +112,14 @@ Connection::Tracker Connection::disconnect()
     // from the destructor) is a no-op.
     if (!m_network) return m_server_objects;
 
-    // Unlike the destructor, leave m_alive set, so onDisconnect handlers run
-    // after a local disconnect the same way they do after a remote one: on a
-    // later event loop turn, they remove the connection from
-    // EventLoop::m_incoming_connections (or delete the connection, if a
-    // ProxyClient owns it), freeing it. This way a caller only needs to call
+    // Severing the network below makes afterDisconnect handlers run on a later
+    // event loop turn, the same way they do after a remote disconnect, and
+    // the _Serve handler removes the connection from
+    // EventLoop::m_incoming_connections. This way a caller only needs to call
     // disconnect(), and does not need to remove the connection itself, which
     // it could not safely do anyway while iterating over the list. Callers
     // that want to wait for in-flight calls to finish wait on the returned
-    // tracker, which outlives the connection.
+    // tracker.
 
     // Try to cancel any calls that may be executing.
     m_canceler.cancel("Interrupted by disconnect");
@@ -241,7 +237,7 @@ Connection::Tracker Connection::disconnect()
     return m_server_objects;
 }
 
-CleanupIt Connection::addSyncCleanup(std::function<void()> fn)
+CleanupIt Connection::onDisconnect(std::function<void()> fn)
 {
     const Lock lock(m_loop->m_mutex);
     // Add cleanup callbacks to the front of list, so sync cleanup functions run
@@ -256,7 +252,7 @@ CleanupIt Connection::addSyncCleanup(std::function<void()> fn)
     return m_sync_cleanup_fns.emplace(m_sync_cleanup_fns.begin(), std::move(fn));
 }
 
-void Connection::removeSyncCleanup(CleanupIt it)
+void Connection::cancelOnDisconnect(CleanupIt it)
 {
     // Require cleanup functions to be removed on the event loop thread to avoid
     // needing to deal with them being removed in the middle of a disconnect.
@@ -388,7 +384,7 @@ std::tuple<ConnThread, bool> SetThread(GuardedRef<ConnThreads> threads, Connecti
     }
     if (inserted) {
         thread->second.emplace(make_thread(), connection, /* destroy_connection= */ false);
-        thread->second->m_disconnect_cb = connection->addSyncCleanup([threads, connection] {
+        thread->second->m_disconnect_cb = connection->onDisconnect([threads, connection] {
             // Remove and destroy this connection's map entry, unless the
             // thread owning the map is exiting and ~ThreadContext already took
             // the entry, in which case that thread destroys it. Look the entry
@@ -434,7 +430,7 @@ ProxyClient<Thread>::~ProxyClient()
         // map, so if ~ThreadContext took the entry first, m_disconnect_cb
         // is still set here.)
         if (m_disconnect_cb && m_context.connection) {
-            m_context.connection->removeSyncCleanup(*m_disconnect_cb);
+            m_context.connection->cancelOnDisconnect(*m_disconnect_cb);
         }
     });
 }

@@ -195,11 +195,11 @@ KJ_TEST("ListenConnections enforces a local connection limit")
 
 KJ_TEST("ListenConnections resumes after a local disconnect")
 {
-    // A connection closed locally (here by erasing it from the incoming-
-    // connection list) must still free the listener's slot so the listener
-    // resumes accepting. The counter decrement runs as an addSyncCleanup cleanup;
-    // if it were in the onDisconnect handler it would be canceled by the
-    // local close and the slot would stay stuck.
+    // A connection closed locally with disconnect() must still free the
+    // listener's slot so the listener resumes accepting. The counter decrement
+    // runs as an onDisconnect cleanup, so it runs synchronously on local
+    // disconnects too; if it were in the deferred afterDisconnect handler it
+    // could be handed a null connection or dropped and the slot would stay stuck.
     ListenSetup server(/*max_connections=*/1);
 
     auto client1 = std::make_unique<ClientSetup>(server.listener.MakeConnectedSocket());
@@ -210,10 +210,13 @@ KJ_TEST("ListenConnections resumes after a local disconnect")
     (**server.m_loop_ref).sync([] {});
     KJ_EXPECT(server.ConnectedCount() == 1);
 
-    // Close the first connection locally on the event loop thread.
+    // Close the first connection locally on the event loop thread. Disconnect
+    // it before dropping the list's reference: under shared ownership, erasing
+    // it from the list alone would not tear it down (see Connection::make).
     EventLoop& loop{**server.m_loop_ref};
     loop.sync([&] {
         KJ_REQUIRE(loop.m_incoming_connections.size() == 1);
+        loop.m_incoming_connections.front()->disconnect();
         loop.m_incoming_connections.pop_front();
     });
 

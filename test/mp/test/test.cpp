@@ -8,7 +8,6 @@
 #include <any>
 #include <atomic>
 #include <capnp/capability.h>
-#include <capnp/rpc-twoparty.h>
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
@@ -105,21 +104,49 @@ public:
               });
               auto pipe = loop.m_io_context.provider->newTwoWayPipe();
 
-              auto server_result = ServeStream<messages::FooInterface>(
-                  loop, kj::mv(pipe.ends[0]), std::make_shared<FooImplementation>(), server_owns_connection);
-              server = server_result.first;
-              EventLoop::Connections::iterator server_it = server_result.second;
-              server_disconnect = [&] { loop.sync([&] { loop.m_incoming_connections.erase(server_it); }); };
+              // Weak, not owning: nothing here needs to keep the connection
+              // alive. When server_owns_connection is true, ServeStream's own
+              // afterDisconnect handler owns tearing it down on a remote
+              // disconnect (via loop.m_incoming_connections); when false (or
+              // when a test disconnects it directly, bypassing
+              // server_disconnect()), the connection stays alive on that list
+              // until something else drops the last reference. An owning
+              // reference here would race both cases: it would leak the
+              // EventLoop forever in the first case unless dropped in lockstep
+              // with ServeStream's own handler, and would let this code tear
+              // the connection down early in the second case, before callers
+              // that expect it to survive until they call server_disconnect()
+              // are done with it.
+              std::weak_ptr<Connection> server_connection;
+              {
+                  auto server_result = ServeStream<messages::FooInterface>(
+                      loop, kj::mv(pipe.ends[0]), std::make_shared<FooImplementation>(), server_owns_connection);
+                  server = server_result.first;
+                  server_connection = server_result.second;
+              }
+              auto server_close = [&] {
+                  if (auto connection = server_connection.lock()) {
+                      connection->disconnect();
+                      loop.m_incoming_connections.remove(connection);
+                  }
+              };
+              server_disconnect = [&] { loop.sync(server_close); };
               server_disconnect_later = [&] {
                   assert(std::this_thread::get_id() == loop.m_thread_id);
-                  loop.m_task_set->add(kj::evalLater([&] { loop.m_incoming_connections.erase(server_it); }));
+                  loop.m_task_set->add(kj::evalLater([&] { server_close(); }));
               };
 
               auto client_proxy =
                   ConnectStream<messages::FooInterface>(loop, kj::mv(pipe.ends[1]), client_owns_connection);
+              std::shared_ptr<Connection> client_connection;
               if (!client_owns_connection) {
-                  Connection* client_connection = client_proxy->m_context.connection;
-                  client_disconnect = [&loop, client_connection] { loop.sync([&] { delete client_connection; }); };
+                  client_connection = client_proxy->m_context.connection;
+                  client_disconnect = [&] { loop.sync([&] {
+                      if (client_connection) {
+                          client_connection->disconnect();
+                          client_connection.reset();
+                      }
+                  }); };
               }
 
               client_promise.set_value(std::move(client_proxy));
@@ -621,7 +648,7 @@ KJ_TEST("Waiting for in-flight server call to finish after disconnect")
     // disconnecting. It is only used before disconnect() below, after which it
     // may be freed.
     Connection* connection{nullptr};
-    foo->m_context.loop->sync([&] { connection = setup.server->m_context.connection; });
+    foo->m_context.loop->sync([&] { connection = setup.server->m_context.connection.get(); });
     EventLoop& loop{*foo->m_context.loop};
 
     // Invoke the async method on a separate thread so its body blocks there
@@ -713,8 +740,8 @@ KJ_TEST("Make simultaneous IPC calls on single remote thread")
     Thread::Client *callback_thread, *request_thread;
     foo->m_context.loop->sync([&] {
         Lock lock(tc.waiter->m_mutex);
-        callback_thread = &tc.callback_threads.at(foo->m_context.connection)->m_client;
-        request_thread = &tc.request_threads.at(foo->m_context.connection)->m_client;
+        callback_thread = &tc.callback_threads.at(foo->m_context.connection.get())->m_client;
+        request_thread = &tc.request_threads.at(foo->m_context.connection.get())->m_client;
     });
 
     // Call callIntFnAsync 3 times with n=100, 200, 300
@@ -858,81 +885,6 @@ KJ_TEST("Async cleanup thread has OS thread name")
     KJ_EXPECT(name.find("/capnp-async-") != std::string::npos, name);
 }
 #endif // HAVE_PTHREAD_GETNAME_NP
-
-KJ_TEST("onDisconnect handler does not run after the connection is destroyed")
-{
-    // Regression test for a race condition where an onDisconnect handler
-    // could fire even after the connection had already been disconnected
-    // locally. Local disconnects are supposed to preempt onDisconnect
-    // handlers so they are able to free Connection objects without risking double
-    // deletions.
-    //
-    // To hit the previous race window deterministically without relying on
-    // socket timing, this test exploits two ordering facts:
-    // m_network.onDisconnect() hands out branches of a forked promise that fire
-    // in the order they were added, and kj::evalLater tasks queued during one
-    // event loop turn run on the next turn in FIFO order. A "destroyer" branch
-    // is registered before the handler under test, so when the peer disconnects
-    // the destroyer fires first and queues an evalLater task that destroys the
-    // Connection ahead of the handler. The handler records whether it ran after
-    // the Connection was destroyed, reading only test-owned flags (never the
-    // freed Connection), so a violation is a deterministic wrong result rather
-    // than a flaky crash.
-
-    std::atomic<bool> connection_destroyed{false};
-    std::atomic<bool> handler_ran{false};
-    std::atomic<bool> handler_ran_after_destroy{false};
-
-    std::thread thread{[&] {
-        EventLoop loop("mptest", [](mp::LogMessage log) {
-            KJ_LOG(INFO, log.level, log.message);
-            if (log.level == mp::Log::Raise) throw std::runtime_error(log.message);
-        });
-        auto pipe = loop.m_io_context.provider->newTwoWayPipe();
-
-        // Server-side connection whose onDisconnect handler is under test.
-        auto server_conn = std::make_unique<Connection>(
-            loop, kj::mv(pipe.ends[0]), [&](Connection& connection) {
-                return ::capnp::Capability::Client(kj::heap<ProxyServer<messages::FooInterface>>(
-                    std::make_shared<FooImplementation>(), connection));
-            });
-
-        // Raw peer end of the pipe. Closing it makes the server connection's
-        // m_network.onDisconnect() resolve, i.e. a real remote disconnect.
-        kj::Own<kj::AsyncIoStream> peer_end = kj::mv(pipe.ends[1]);
-
-        // Destroyer branch, registered BEFORE the handler under test so it
-        // fires first and its destroy task E_d is queued before the buggy
-        // bounced handler task E_f. It schedules the destroy on a *separate*
-        // task, so the connection is not torn down from inside an onDisconnect
-        // continuation.
-        loop.m_task_set->add(server_conn->m_network->onDisconnect().then([&] {
-            loop.m_task_set->add(kj::evalLater([&] {
-                server_conn.reset();
-                connection_destroyed = true;
-            }));
-        }));
-
-        // Handler under test. It intentionally does not dereference the
-        // Connection; it only records whether it ran after the connection was
-        // destroyed, so the result is deterministic.
-        server_conn->onDisconnect([&] {
-            handler_ran = true;
-            handler_ran_after_destroy = connection_destroyed.load();
-        });
-
-        // Trigger the remote disconnect once the loop is running.
-        loop.m_task_set->add(kj::evalLater([&] { peer_end = nullptr; }));
-
-        loop.loop();
-    }};
-    thread.join();
-
-    // The handler must have run (both versions schedule it), but it must never
-    // run after the connection was destroyed.
-    KJ_EXPECT(handler_ran);
-    KJ_EXPECT(!handler_ran_after_destroy);
-}
 
 KJ_TEST("Call async IPC method without thread or pool errors correctly")
 {
