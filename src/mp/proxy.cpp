@@ -10,6 +10,7 @@
 #include <mp/type-threadmap.h>
 #include <mp/util.h>
 
+#include <any>
 #include <atomic>
 #include <capnp/capability.h>
 #include <capnp/common.h> // IWYU pragma: keep
@@ -440,11 +441,8 @@ ProxyServer<Thread>::ProxyServer(Connection& connection, ThreadContext& thread_c
 ProxyServer<Thread>::~ProxyServer()
 {
     if (!m_thread.joinable()) return;
-    // Stop async thread and wait for it to exit. Need to wait because the
-    // m_thread handle needs to outlive the thread to avoid "terminate called
-    // without an active exception" error. An alternative to waiting would be
-    // detach the thread, but this would introduce nondeterminism which could
-    // make code harder to debug or extend.
+    // Signal the worker to stop, then join it on the async cleanup thread
+    // so the event loop remains available until the worker has exited.
     assert(m_thread_context.waiter.get());
     std::unique_ptr<Waiter> waiter;
     {
@@ -454,16 +452,24 @@ ProxyServer<Thread>::~ProxyServer()
         waiter = std::move(m_thread_context.waiter);
         //! Assert waiter is idle. This destructor shouldn't be getting called if it is busy.
         assert(!waiter->m_fn);
-        // Clear client maps now to avoid deadlock in m_thread.join() call
-        // below. The maps contain Thread::Client objects that need to be
-        // destroyed from the event loop thread (this thread), which can't
-        // happen if this thread is busy calling join.
+        // Clear client maps now, before scheduling the async cleanup below.
+        // The maps contain Thread::Client objects that need to be destroyed
+        // from the event loop thread (this thread), rather than during worker
+        // thread-local destruction.
         m_thread_context.request_threads.clear();
         m_thread_context.callback_threads.clear();
         //! Ping waiter.
         waiter->m_cv.notify_all();
     }
-    m_thread.join();
+    // On MSVC, client ThreadContext destructors run under the Windows loader
+    // lock and call EventLoop::sync(). Joining here can deadlock: the client
+    // waits for this event loop, while the worker needs the loader lock to
+    // finish exiting. Keep the event loop available while the worker exits.
+    // Retain the waiter until join completes because the worker still uses
+    // its mutex and condition variable while returning from Waiter::wait().
+    m_loop->addAsyncCleanup([thread = std::move(m_thread), waiter = std::move(waiter)]() mutable {
+        thread.join();
+    });
 }
 
 kj::Promise<void> ProxyServer<Thread>::getName(GetNameContext context)
@@ -508,12 +514,15 @@ kj::Promise<void> ProxyServer<ThreadMap>::makeThread(MakeThreadContext context)
         SetOsThreadName("capnp-worker");
         CurrentThread().thread_name = ThreadName(loop.m_exe_name) + " (from " + from + ")";
         CurrentThread().waiter = std::make_unique<Waiter>();
-        Lock lock(CurrentThread().waiter->m_mutex);
-        thread_context.set_value(&CurrentThread());
-        if (loop.testing_hook_makethread_created) loop.testing_hook_makethread_created();
-        // Wait for shutdown signal from ProxyServer<Thread> destructor (signal
-        // is just waiter getting set to null.)
-        CurrentThread().waiter->wait(lock, [] { return !CurrentThread().waiter; });
+        {
+            Lock lock(CurrentThread().waiter->m_mutex);
+            thread_context.set_value(&CurrentThread());
+            if (loop.testing_hook_makethread_created) loop.testing_hook_makethread_created();
+            // Wait for shutdown signal from ProxyServer<Thread> destructor (signal
+            // is just waiter getting set to null.)
+            CurrentThread().waiter->wait(lock, [] { return !CurrentThread().waiter; });
+        }
+        if (loop.testing_hook_misc) loop.testing_hook_misc("worker thread exit");
     });
     auto thread_server = kj::heap<ProxyServer<Thread>>(m_connection, *thread_context.get_future().get(), std::move(thread));
     auto thread_client = m_connection.m_threads.add(kj::mv(thread_server));

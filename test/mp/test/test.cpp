@@ -469,6 +469,73 @@ KJ_TEST("Calling async IPC method with a remote disconnect while results are bui
     setup.server_disconnect();
 }
 
+KJ_TEST("Client thread exits before its connection closes")
+{
+    // Check that client thread exit does not deadlock with worker shutdown.
+    // On MSVC, the caller's thread-local cleanup holds the Windows loader lock
+    // while waiting for the event loop. If the event loop joins the worker,
+    // the worker needs that same lock to finish exiting, creating a cycle.
+    // Joining the worker off the event loop must prevent this deadlock.
+    //
+    // This test runs on all platforms, but is only expected to catch the
+    // regression on MSVC. The next test provides portable regression coverage.
+    TestSetup setup;
+    auto* foo = setup.client.get();
+    foo->initThreadMap();
+    setup.server->m_impl->m_int_fn = [](int arg) { return arg + 1; };
+
+    // setup.client keeps the connection open while the caller's thread-local
+    // cleanup releases the remote worker.
+    std::thread caller{[&] { KJ_EXPECT(foo->callIntFnAsync(41) == 42); }};
+    caller.join();
+
+    // The connection remains usable after the first caller has gone away.
+    KJ_EXPECT(foo->callIntFnAsync(1) == 2);
+}
+
+KJ_TEST("Disconnect completes while a worker exits")
+{
+    // Portable variant of the client-exit regression above. Disconnect without
+    // exiting an IPC caller thread, then hold the worker just before it exits
+    // and check that the event loop can finish disconnecting. This avoids
+    // depending on platform-specific thread-local destruction.
+
+    // These signals outlive setup, which waits for all worker cleanup.
+    std::promise<void> worker_stopping;
+    auto worker_stopping_future = worker_stopping.get_future();
+    std::promise<void> release_worker;
+    auto release_worker_future = release_worker.get_future();
+    TestSetup setup;
+    auto* foo = setup.client.get();
+    EventLoop& loop = *foo->m_context.loop;
+    EventLoopRef loop_ref{loop};
+    loop.testing_hook_misc = [&](std::any arg) {
+        if (const char* const* tag{std::any_cast<const char*>(&arg)};
+            tag && std::string_view{*tag} == "worker thread exit") {
+            worker_stopping.set_value();
+            release_worker_future.wait();
+        }
+    };
+    foo->initThreadMap();
+    setup.server->m_impl->m_fn = [] {};
+    foo->callFnAsync();
+
+    std::promise<void> disconnected;
+    std::thread disconnect{[&] {
+        setup.server_disconnect();
+        disconnected.set_value();
+    }};
+    const auto stopping = worker_stopping_future.wait_for(std::chrono::seconds{5});
+    const auto complete = disconnected.get_future().wait_for(std::chrono::seconds{5});
+
+    // Always unblock the worker before checking the results. With the old
+    // synchronous join, disconnect times out but cleanup can still complete.
+    release_worker.set_value();
+    disconnect.join();
+    KJ_EXPECT(stopping == std::future_status::ready);
+    KJ_EXPECT(complete == std::future_status::ready);
+}
+
 KJ_TEST("Worker thread destroyed before it is initialized")
 {
     // Regression test for bitcoin/bitcoin#34711, bitcoin/bitcoin#34756 where a
