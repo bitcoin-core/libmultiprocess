@@ -272,7 +272,7 @@ public:
 
     //! Register cleanup function to run on asynchronous worker thread without
     //! blocking the event loop thread.
-    void addAsyncCleanup(std::function<void()> fn);
+    void addAsyncCleanup(kj::Function<void()> fn);
 
     //! Start asynchronous worker thread if necessary. This is only done if
     //! there are ProxyServerBase::m_impl objects that need to be destroyed
@@ -305,7 +305,7 @@ public:
     kj::FunctionParam<void()>* m_sync_fn MP_GUARDED_BY(m_mutex) = nullptr;
 
     //! Callback functions to run on async thread.
-    std::optional<CleanupList> m_async_fns MP_GUARDED_BY(m_mutex);
+    std::optional<AsyncCleanupList> m_async_fns MP_GUARDED_BY(m_mutex);
 
     //! Socket pair used to post and wait for wakeups to the event loop thread.
     kj::Own<kj::AsyncIoStream> m_wait_stream;

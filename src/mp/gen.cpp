@@ -344,6 +344,7 @@ static void Generate(kj::StringPtr src_prefix,
     cpp_types << "#include <" << include_path << ".h> // IWYU pragma: keep\n";
     cpp_types << "#include <" << include_path << ".proxy.h>\n";
     cpp_types << "#include <" << include_path << ".proxy-types.h> // IWYU pragma: keep\n";
+    cpp_types << "#include <kj/common.h>\n";
     cpp_types << "#include <" << PROXY_TYPES << ">\n\n";
     cpp_types << "namespace mp {\n";
 
