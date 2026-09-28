@@ -231,7 +231,7 @@ void Connection::removeSyncCleanup(CleanupIt it)
     m_sync_cleanup_fns.erase(it);
 }
 
-void EventLoop::addAsyncCleanup(std::function<void()> fn)
+void EventLoop::addAsyncCleanup(kj::Function<void()> fn)
 {
     const Lock lock(m_mutex);
     // Add async cleanup callbacks to the back of the list. Unlike the sync
@@ -363,7 +363,7 @@ void EventLoop::startAsyncThread()
             while (m_async_fns) {
                 if (!m_async_fns->empty()) {
                     EventLoopRef ref{*this, &lock};
-                    const std::function<void()> fn = std::move(m_async_fns->front());
+                    kj::Function<void()> fn = std::move(m_async_fns->front());
                     m_async_fns->pop_front();
                     Unlock(lock, fn);
                     // Important to relock because of the wait() call below.
