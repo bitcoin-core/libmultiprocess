@@ -5,4 +5,4 @@ export CXX=clang++
 export CXXFLAGS="-ggdb -Werror -Wall -Wextra -Wpedantic -Wthread-safety -Wno-unused-parameter -fsanitize=thread -Wno-c++23-lambda-attributes"
 CMAKE_ARGS=()
 BUILD_ARGS=(-k)
-BUILD_TARGETS=(mptest)
+BUILD_TARGETS=(mptest mpclocktest)
