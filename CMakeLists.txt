@@ -104,10 +104,29 @@ endif()
 
 if(MP_ENABLE_CLANG_TIDY OR MP_ENABLE_IWYU)
   # Workaround for nix from https://gitlab.kitware.com/cmake/cmake/-/issues/20912#note_793338
-  # Nix injects header paths via $NIX_CFLAGS_COMPILE; CMake tags these as
-  # CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES and omits them from the compile
-  # database, so clang-tidy, which ignores $NIX_CFLAGS_COMPILE, can't find capnp
-  # headers. Setting them as standard passes them to clang-tidy.
+  #
+  # On non-nix systems, compilers find C++ standard library headers in standard
+  # locations like /usr/include, and find dependency headers through -I flags on
+  # the compiler command line. On nix neither is true: compiler binaries are
+  # wrapped by scripts that inject the standard library header locations
+  # themselves, and dependency header locations are passed to the wrapper through
+  # $NIX_CFLAGS_COMPILE instead of on the command line. So CMake records all these
+  # paths as CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES and leaves them off the
+  # command lines it writes to the compile database.
+  #
+  # This normally does not matter, because analysis tools have their own wrapper
+  # scripts that re-add these paths the same way. But the nixpkgs
+  # include-what-you-use wrapper only re-adds -isystem flags and drops the
+  # -cxx-isystem flags used for the C++ standard library, so IWYU cannot find
+  # standard headers like <cstddef>. Setting the implicit include directories as
+  # standard directories puts them back on every command line, which is what lets
+  # the buggy IWYU wrapper find them.
+  #
+  # This workaround is temporary:
+  # - clang-tidy no longer needs it: the nixpkgs clang-tools wrapper was fixed in
+  #   https://github.com/NixOS/nixpkgs/pull/462747.
+  # - IWYU will stop needing it once its wrapper is fixed the same way (see
+  #   https://github.com/bitcoin-core/libmultiprocess/pull/238#discussion_r3342093865).
   set(CMAKE_CXX_STANDARD_INCLUDE_DIRECTORIES ${CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES})
 endif()
 
