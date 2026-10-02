@@ -293,7 +293,7 @@ using Stream = kj::Own<kj::AsyncIoStream>;
 
 using ProcessId = int;
 using SocketId = int;
-constexpr SocketId SocketError{-1};
+inline constexpr SocketId SocketError{-1};
 
 //! Information about parent process passed to child process as a command-line
 //! argument. On unix this is the child socket fd number formatted as a string.
