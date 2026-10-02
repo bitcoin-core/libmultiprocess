@@ -72,9 +72,12 @@ in crossPkgs.mkShell {
     capnproto
   ];
   nativeBuildInputs = with pkgs; [
+    autoconf
+    automake
     cmakeBuild
     git
     include-what-you-use
+    libtool
     ninja
   ] ++ lib.optional (gcc != null) gcc ++ lib.optionals (!minimal) [
     clang
