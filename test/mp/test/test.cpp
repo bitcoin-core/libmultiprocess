@@ -138,6 +138,13 @@ public:
         client = client_promise.get_future().get();
     }
 
+    //! Exchange thread maps and configure a no-op callFnAsync() handler.
+    void initAsyncCalls()
+    {
+        client->initThreadMap();
+        server->m_impl->m_fn = [] {};
+    }
+
     ~TestSetup()
     {
         // Test that client cleanup_fns are executed.
@@ -480,8 +487,7 @@ KJ_TEST("Worker thread destroyed before it is initialized")
     // the worker thread started waiting, causing a SIGSEGV when it did start.
     TestSetup setup;
     ProxyClient<messages::FooInterface>* foo = setup.client.get();
-    foo->initThreadMap();
-    setup.server->m_impl->m_fn = [] {};
+    setup.initAsyncCalls();
 
     EventLoop& loop = *setup.server->m_context.connection->m_loop;
     loop.testing_hook_makethread = [&] {
@@ -510,8 +516,7 @@ KJ_TEST("Calling async IPC method, with server disconnect racing the call")
     // calling call_context.getParams().
     TestSetup setup;
     ProxyClient<messages::FooInterface>* foo = setup.client.get();
-    foo->initThreadMap();
-    setup.server->m_impl->m_fn = [] {};
+    setup.initAsyncCalls();
 
     EventLoop& loop = *setup.server->m_context.connection->m_loop;
     loop.testing_hook_async_request_start = [&] {
@@ -537,8 +542,7 @@ KJ_TEST("Calling async IPC method, with server disconnect after cleanup")
     // scope.
     TestSetup setup;
     ProxyClient<messages::FooInterface>* foo = setup.client.get();
-    foo->initThreadMap();
-    setup.server->m_impl->m_fn = [] {};
+    setup.initAsyncCalls();
 
     EventLoop& loop = *setup.server->m_context.connection->m_loop;
     loop.testing_hook_async_request_done = [&] {
@@ -580,10 +584,9 @@ KJ_TEST("Make simultaneous IPC calls on single remote thread")
     ProxyClient<messages::FooInterface>* foo = setup.client.get();
     std::promise<void> signal;
 
-    foo->initThreadMap();
+    setup.initAsyncCalls();
     // Use callFnAsync() to get the client to set up the request_thread
     // that will be used for the test.
-    setup.server->m_impl->m_fn = [&] {};
     foo->callFnAsync();
     ThreadContext& tc{CurrentThread()};
     Thread::Client *callback_thread, *request_thread;
