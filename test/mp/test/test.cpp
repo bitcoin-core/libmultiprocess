@@ -476,6 +476,28 @@ KJ_TEST("Calling async IPC method with a remote disconnect while results are bui
     setup.server_disconnect();
 }
 
+KJ_TEST("Async cleanup can be queued from another thread")
+{
+    // Keep promises alive until setup has joined the async cleanup thread.
+    std::promise<int> first;
+    std::promise<int> second;
+    TestSetup setup;
+    EventLoop& loop = *setup.client->m_context.loop;
+    // Ensure loop() is active before posting from this test's thread.
+    loop.sync([] {});
+
+    loop.addAsyncCleanup([value = std::make_unique<int>(41), &first] {
+        first.set_value(*value);
+    });
+    KJ_EXPECT(first.get_future().get() == 41);
+
+    // Exercise notification after the async thread has already been started.
+    loop.addAsyncCleanup([value = std::make_unique<int>(42), &second] {
+        second.set_value(*value);
+    });
+    KJ_EXPECT(second.get_future().get() == 42);
+}
+
 KJ_TEST("Worker thread destroyed before it is initialized")
 {
     // Regression test for bitcoin/bitcoin#34711, bitcoin/bitcoin#34756 where a

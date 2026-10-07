@@ -270,7 +270,8 @@ void Connection::removeSyncCleanup(CleanupIt it)
 
 void EventLoop::addAsyncCleanup(kj::Function<void()> fn)
 {
-    const Lock lock(m_mutex);
+    Lock lock(m_mutex);
+    EventLoopRef ref{*this, &lock};
     // Add async cleanup callbacks to the back of the list. Unlike the sync
     // cleanup list, this list order is more significant because it determines
     // the order server objects are destroyed when there is a sudden disconnect,
@@ -287,8 +288,24 @@ void EventLoop::addAsyncCleanup(kj::Function<void()> fn)
     // process, otherwise shared pointer counts of the CWallet objects (which
     // inherit from Chain::Notification) will not be 1 when WalletLoader
     // destructor runs and it will wait forever for them to be released.
+    const bool wake_loop = m_async_fns->empty() && !m_async_thread.joinable();
     m_async_fns->emplace_back(std::move(fn));
-    startAsyncThread();
+    if (std::this_thread::get_id() == m_thread_id) {
+        startAsyncThread();
+    } else if (m_async_thread.joinable()) {
+        m_cv.notify_all();
+    } else if (wake_loop) {
+        // Thread-local destructors can run under the Windows loader lock.
+        // Wake the event loop to start the async thread instead of starting or
+        // waiting for a thread here. The reference keeps the loop alive until
+        // the wakeup is posted, even if cleanup completes in the meantime.
+        // Only wake on the first queued callback, so exiting threads cannot
+        // fill the pipe while the loop is waiting for a worker to start.
+        Unlock(lock, [&] {
+            char buffer = 0;
+            m_post_writer->write(&buffer, 1);
+        });
+    }
 }
 
 EventLoop::EventLoop(const char* exe_name, LogOptions log_opts, void* context)
@@ -341,6 +358,7 @@ void EventLoop::loop()
         const size_t read_bytes = wait_stream->read(&buffer, 0, 1).wait(m_io_context.waitScope);
         if (read_bytes != 1) throw std::logic_error("EventLoop wait_stream closed unexpectedly");
         Lock lock(m_mutex);
+        startAsyncThread();
         if (m_sync_fn) {
             // m_sync_fn throwing is never expected. If it does happen, the caller
             // of EventLoop::sync() will return without any indication of failure,

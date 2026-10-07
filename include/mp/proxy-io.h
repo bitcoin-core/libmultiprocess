@@ -271,11 +271,12 @@ public:
     void sync(kj::FunctionParam<void()> fn);
 
     //! Register cleanup function to run on asynchronous worker thread without
-    //! blocking the event loop thread.
+    //! blocking the event loop thread. May be called from any thread while loop()
+    //! is active. Does not wait for cleanup or for the async thread to start.
     void addAsyncCleanup(kj::Function<void()> fn);
 
     //! Start asynchronous worker thread if necessary. This is only done if
-    //! there are ProxyServerBase::m_impl objects that need to be destroyed
+    //! there are thread clients or ProxyServerBase::m_impl objects to destroy
     //! asynchronously, without tying up the event loop thread. This can happen
     //! when an interface does not declare a destroy() method that would allow
     //! the client to wait for the destructor to finish and run it on a
