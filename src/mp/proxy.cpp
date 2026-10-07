@@ -84,6 +84,24 @@ ConnThreads ThreadClients::extractClients(ConnThreads& threads, const EventLoop&
     return removed;
 }
 
+ThreadContext::~ThreadContext()
+{
+    // The Windows loader lock may be held here. Queue client cleanup without
+    // waiting for an event loop or a thread to start or exit. SetThread's
+    // disconnect callbacks keep referring to the heap-owned maps and mutex.
+    const Lock lock(clients->mutex);
+    const ConnThreads* threads = &clients->request_threads;
+    if (threads->empty()) {
+        threads = &clients->callback_threads;
+    }
+    if (threads->empty()) return;
+    EventLoop& loop = *threads->begin()->second->m_context.loop;
+    loop.addAsyncCleanup([clients = std::move(clients)]() mutable {
+        clients->clear();
+        clients.reset();
+    });
+}
+
 Stream MakeStream(EventLoop&loop, SocketId socket)
 {
     Stream stream;

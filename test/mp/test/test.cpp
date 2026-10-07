@@ -498,6 +498,110 @@ KJ_TEST("Async cleanup can be queued from another thread")
     KJ_EXPECT(second.get_future().get() == 42);
 }
 
+KJ_TEST("Client thread exits before its connection closes")
+{
+    // Keep the connection open while a caller exits and releases its thread
+    // handles, then verify another caller can use it. The next test covers
+    // blocked event loops deterministically without platform-specific timing.
+    TestSetup setup;
+    auto* foo = setup.client.get();
+    foo->initThreadMap();
+    setup.server->m_impl->m_int_fn = [](int arg) { return arg + 1; };
+
+    // setup.client keeps the connection open while the caller's thread-local
+    // cleanup releases the remote worker.
+    std::thread caller{[&] { KJ_EXPECT(foo->callIntFnAsync(41) == 42); }};
+    caller.join();
+
+    // The connection remains usable after the first caller has gone away.
+    KJ_EXPECT(foo->callIntFnAsync(1) == 2);
+}
+
+KJ_TEST("Client thread exits while the event loop is blocked")
+{
+    // Model the loader-lock cycle portably: after making a call, let the
+    // client exit while its event loop is blocked. Thread-local destruction
+    // must return without waiting for sync(), even if the cleanup thread has
+    // not been started yet.
+    std::promise<void> exit_client;
+    auto exit_client_future = exit_client.get_future();
+    std::promise<void> loop_blocked;
+    std::promise<void> release_loop;
+    auto release_loop_future = release_loop.get_future();
+    std::promise<void> caller_done;
+    TestSetup setup;
+    auto* foo = setup.client.get();
+    EventLoop& loop = *foo->m_context.loop;
+    setup.initAsyncCalls();
+
+    std::thread caller{[&] {
+        foo->callFnAsync();
+        caller_done.set_value();
+        exit_client_future.wait();
+    }};
+    caller_done.get_future().get();
+    // Post the blocking task without waiting for it to complete.
+    loop.sync([&] {
+        loop.m_task_set->add(kj::evalLater([&] {
+            loop_blocked.set_value();
+            release_loop_future.wait();
+        }));
+    });
+    loop_blocked.get_future().get();
+
+    std::promise<void> caller_exited;
+    auto caller_exited_future = caller_exited.get_future();
+    std::thread joiner{[&] {
+        caller.join();
+        caller_exited.set_value();
+    }};
+    exit_client.set_value();
+    const auto exited = caller_exited_future.wait_for(std::chrono::seconds{5});
+    // Always release the loop before checking, so the unfixed code can finish.
+    release_loop.set_value();
+    joiner.join();
+    KJ_EXPECT(exited == std::future_status::ready);
+    // The connection remains usable after deferred client cleanup.
+    foo->callFnAsync();
+}
+
+KJ_TEST("Disconnect removes thread clients after their thread exits")
+{
+    // Hold the async thread so disconnect callbacks run after ThreadContext
+    // has been destroyed, but before its deferred client cleanup can run.
+    std::promise<void> cleanup_started;
+    std::promise<void> release_cleanup;
+    auto release_cleanup_future = release_cleanup.get_future();
+    TestSetup setup{/*client_owns_connection=*/false};
+    auto* foo = setup.client.get();
+    EventLoop& loop = *foo->m_context.loop;
+    setup.initAsyncCalls();
+    loop.addAsyncCleanup([&] {
+        cleanup_started.set_value();
+        release_cleanup_future.wait();
+    });
+    cleanup_started.get_future().get();
+    std::thread caller{[&] { foo->callFnAsync(); }};
+    caller.join();
+    setup.client_disconnect();
+    setup.server_disconnect();
+    release_cleanup.set_value();
+}
+
+KJ_TEST("Client thread exits after calls over different event loops")
+{
+    TestSetup first;
+    TestSetup second;
+    first.initAsyncCalls();
+    second.initAsyncCalls();
+    std::thread caller{[&] {
+        first.client->callFnAsync();
+        second.client->callFnAsync();
+    }};
+    caller.join();
+    // Each setup waits for its event loop to exit, including deferred cleanup.
+}
+
 KJ_TEST("Worker thread destroyed before it is initialized")
 {
     // Regression test for bitcoin/bitcoin#34711, bitcoin/bitcoin#34756 where a

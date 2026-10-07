@@ -749,6 +749,8 @@ private:
 //! with local and remote ProxyClient<Thread> objects.
 struct ThreadContext
 {
+    ~ThreadContext();
+
     //! Identifying string for debug.
     std::string thread_name;
 
