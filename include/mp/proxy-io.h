@@ -91,8 +91,8 @@ struct ProxyClient<Thread> : public ProxyClientBase<Thread, ::capnp::Void>
     //! map. It will also reset m_disconnect_cb so the destructor does not
     //! access it. In the normal case where there is no sudden disconnect, the
     //! destructor will unregister m_disconnect_cb so the callback is never run.
-    //! Since this variable is accessed from multiple threads, accesses should
-    //! be guarded with the associated Waiter::m_mutex.
+    //! Registration and removal of this callback run on the associated event
+    //! loop thread.
     std::optional<CleanupIt> m_disconnect_cb;
 };
 
@@ -418,13 +418,8 @@ struct Waiter
         });
     }
 
-    //! Mutex mainly used internally by waiter class, but also used externally
-    //! to guard access to related state. Specifically, since the thread_local
-    //! ThreadContext struct owns a Waiter, the Waiter::m_mutex is used to guard
-    //! access to other parts of the struct to avoid needing to deal with more
-    //! mutexes than necessary. This mutex can be held at the same time as
-    //! EventLoop::m_mutex as long as Waiter::mutex is locked first and
-    //! EventLoop::m_mutex is locked second.
+    //! Mutex guarding the waiter's pending function and shutdown signal.
+    //! May be locked before ThreadClients::mutex or EventLoop::m_mutex.
     Mutex m_mutex;
     std::condition_variable m_cv MP_GUARDED_BY(m_mutex);
     std::optional<kj::Function<void()>> m_fn MP_GUARDED_BY(m_mutex);
@@ -704,7 +699,7 @@ void ProxyServerBase<Interface, Impl>::invokeDestroy()
 //! contain multiple if a single thread makes IPC calls over multiple
 //! connections. A std::optional value type is used to avoid the map needing to
 //! be locked while ProxyClient<Thread> objects are constructed, see
-//! ThreadContext "Synchronization note" below.
+//! ThreadContext::clients synchronization note below.
 using ConnThreads = std::map<Connection*, std::optional<ProxyClient<Thread>>>;
 using ConnThread = ConnThreads::iterator;
 
@@ -712,6 +707,30 @@ using ConnThread = ConnThreads::iterator;
 // map, or create a new one and insert it into the map. Return map iterator and
 // inserted bool.
 std::tuple<ConnThread, bool> SetThread(GuardedRef<ConnThreads> threads, Connection* connection, const std::function<Thread::Client()>& make_thread);
+
+//! Per-connection thread clients and their mutex, independent of the waiter.
+struct ThreadClients
+{
+    //! Release all clients on their respective event loops without holding the
+    //! map mutex while waiting. May race with disconnect callbacks.
+    void clear();
+
+    //! May be locked before EventLoop::m_mutex, never after it.
+    Mutex mutex;
+    //! Local thread handles passed as Context.callbackThread so the server can
+    //! call back into the waiting caller, keyed by connection.
+    ConnThreads callback_threads MP_GUARDED_BY(mutex);
+    //! Thread handles selecting the server execution thread (Context.thread),
+    //! keyed by connection: remote workers created by ThreadMap.makeThread, or
+    //! the caller's callbackThread while this thread handles a server request.
+    ConnThreads request_threads MP_GUARDED_BY(mutex);
+
+private:
+    //! Pin an event loop with remaining clients, or return nullopt if empty.
+    std::optional<EventLoopRef> pinLoop(const ConnThreads& threads);
+    //! Extract this loop's clients under the mutex, returning them after unlocking.
+    ConnThreads extractClients(ConnThreads& threads, const EventLoop& loop);
+};
 
 //! The thread_local ThreadContext struct (see CurrentThread()) provides information
 //! about individual threads and a way of communicating between them. Because
@@ -748,35 +767,15 @@ struct ThreadContext
     //! destroyed once for the lifetime of the thread.
     std::unique_ptr<Waiter> waiter = nullptr;
 
-    //! When client is making a request to a server, this is the
-    //! `callbackThread` argument it passes in the request, used by the server
-    //! in case it needs to make callbacks into the client that need to execute
-    //! while the client is waiting. This will be set to a local thread object.
+    //! Per-connection thread handles and their mutex.
     //!
-    //! Synchronization note: The callback_thread and request_thread maps are
-    //! only ever accessed internally by this thread's destructor and externally
-    //! by Cap'n Proto event loop threads. Since it's possible for IPC client
-    //! threads to make calls over different connections that could have
-    //! different event loops, these maps are guarded by Waiter::m_mutex in case
-    //! different event loop threads add or remove map entries simultaneously.
-    //! However, individual ProxyClient<Thread> objects in the maps will only be
-    //! associated with one event loop and guarded by EventLoop::m_mutex. So
-    //! Waiter::m_mutex does not need to be held while accessing individual
-    //! ProxyClient<Thread> instances, and may even need to be released to
-    //! respect lock order and avoid locking Waiter::m_mutex before
-    //! EventLoop::m_mutex.
-    ConnThreads callback_threads MP_GUARDED_BY(waiter->m_mutex);
-
-    //! When client is making a request to a server, this is the `thread`
-    //! argument it passes in the request, used to control which thread on
-    //! server will be responsible for executing it. If client call is being
-    //! made from a local thread, this will be a remote thread object returned
-    //! by makeThread. If a client call is being made from a thread currently
-    //! handling a server request, this will be set to the `callbackThread`
-    //! request thread argument passed in that request.
-    //!
-    //! Synchronization note: \ref callback_threads note applies here as well.
-    ConnThreads request_threads MP_GUARDED_BY(waiter->m_mutex);
+    //! Synchronization note: Maps are accessed by cleanup code and by event loops
+    //! from potentially different connections, so ThreadClients::mutex guards
+    //! shared map access. Each client's Cap'n Proto state is accessed only on its
+    //! own event loop. The mutex must not be held while waiting for an event
+    //! loop, since disconnect callbacks lock it too. Explicit cleanup extracts
+    //! clients under the map mutex and destroys them after unlocking it.
+    ThreadClients clients;
 
     //! Whether this thread is a capnp event loop thread. Not really used except
     //! to assert false if there's an attempt to execute a blocking operation
@@ -963,7 +962,7 @@ extern thread_local ThreadContext g_thread_context; // NOLINT(bitcoin-nontrivial
 //! process boundary and callbacks from the server run on the originating
 //! client thread. The client-side handles for those dedicated server threads
 //! (the ProxyClient<Thread> objects returned by ThreadMap.makeThread, stored
-//! per connection in the request_threads / callback_threads maps below) are
+//! per connection in the request_threads / callback_threads maps) are
 //! state that must be keyed implicitly by the calling thread, and must be
 //! released when the client thread exits so the corresponding server threads
 //! are freed. A thread_local object is the C++ mechanism that provides both

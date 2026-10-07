@@ -17,6 +17,7 @@
 #include <condition_variable>
 #include <functional>
 #include <future>
+#include <initializer_list>
 #include <kj/async.h>
 #include <kj/async-io.h>
 #include <kj/async-prelude.h>
@@ -45,6 +46,42 @@ thread_local ThreadContext g_thread_context; // NOLINT(bitcoin-nontrivial-thread
 ThreadContext& CurrentThread()
 {
     return g_thread_context;
+}
+
+void ThreadClients::clear()
+{
+    for (ConnThreads* threads : {&request_threads, &callback_threads}) {
+        while (auto loop_ref = pinLoop(*threads)) {
+            EventLoop& loop = *loop_ref.value();
+            loop.sync([&] {
+                // A disconnect may have removed entries since pinLoop().
+                // Destroy the remaining clients on their loop, after unlocking.
+                auto removed = extractClients(*threads, loop);
+            });
+        }
+    }
+}
+
+std::optional<EventLoopRef> ThreadClients::pinLoop(const ConnThreads& threads)
+{
+    const Lock lock(mutex);
+    if (threads.empty()) return std::nullopt;
+    // Pin the loop before a disconnect can erase its client.
+    return EventLoopRef{*threads.begin()->second->m_context.loop};
+}
+
+ConnThreads ThreadClients::extractClients(ConnThreads& threads, const EventLoop& loop)
+{
+    ConnThreads removed;
+    const Lock lock(mutex);
+    for (auto it = threads.begin(); it != threads.end();) {
+        if (it->second->m_context.loop.m_loop == &loop) {
+            removed.insert(threads.extract(it++));
+        } else {
+            ++it;
+        }
+    }
+    return removed;
 }
 
 Stream MakeStream(EventLoop&loop, SocketId socket)
@@ -458,8 +495,7 @@ ProxyServer<Thread>::~ProxyServer()
         // below. The maps contain Thread::Client objects that need to be
         // destroyed from the event loop thread (this thread), which can't
         // happen if this thread is busy calling join.
-        m_thread_context.request_threads.clear();
-        m_thread_context.callback_threads.clear();
+        m_thread_context.clients.clear();
         //! Ping waiter.
         waiter->m_cv.notify_all();
     }

@@ -591,9 +591,9 @@ KJ_TEST("Make simultaneous IPC calls on single remote thread")
     ThreadContext& tc{CurrentThread()};
     Thread::Client *callback_thread, *request_thread;
     foo->m_context.loop->sync([&] {
-        Lock lock(tc.waiter->m_mutex);
-        callback_thread = &tc.callback_threads.at(foo->m_context.connection)->m_client;
-        request_thread = &tc.request_threads.at(foo->m_context.connection)->m_client;
+        Lock lock(tc.clients.mutex);
+        callback_thread = &tc.clients.callback_threads.at(foo->m_context.connection)->m_client;
+        request_thread = &tc.clients.request_threads.at(foo->m_context.connection)->m_client;
     });
 
     // Call callIntFnAsync 3 times with n=100, 200, 300
