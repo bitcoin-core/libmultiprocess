@@ -836,10 +836,10 @@ kj::Promise<T> ProxyServer<Thread>::post(Fn&& fn)
                     result_value.reset();
                 }
                 result_fulfiller = nullptr;
-                // Use evalLater to destroy the ProxyServer<Thread> self
-                // reference, if it is the last reference, because the
-                // ProxyServer<Thread> destructor needs to join the thread,
-                // which can't happen until this sync() block has exited.
+                // Defer releasing self to keep the server alive until this
+                // result-delivery callback returns, keeping shutdown outside
+                // the callback. This is a lifetime precaution; the asynchronous
+                // join does not require the deferral.
                 m_loop->m_task_set->add(kj::evalLater([self = kj::mv(self)] {}));
             });
         });

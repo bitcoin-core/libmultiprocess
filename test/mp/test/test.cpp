@@ -602,6 +602,48 @@ KJ_TEST("Client thread exits after calls over different event loops")
     // Each setup waits for its event loop to exit, including deferred cleanup.
 }
 
+KJ_TEST("Disconnect completes while a worker exits")
+{
+    // Keep the worker alive after it stops accepting work, and verify that
+    // disconnect and event-loop calls can complete before it finishes exiting.
+    // This complements client-exit coverage: moving client cleanup off the
+    // exiting thread does not by itself keep the event loop available here.
+
+    // These signals outlive setup, which waits for all worker cleanup.
+    std::promise<void> worker_stopping;
+    auto worker_stopping_future = worker_stopping.get_future();
+    std::promise<void> release_worker;
+    auto release_worker_future = release_worker.get_future();
+    TestSetup setup;
+    auto* foo = setup.client.get();
+    EventLoop& loop = *foo->m_context.loop;
+    EventLoopRef loop_ref{loop};
+    loop.testing_hook_misc = [&](std::any arg) {
+        if (const char* const* tag{std::any_cast<const char*>(&arg)};
+            tag && std::string_view{*tag} == "worker thread exit") {
+            worker_stopping.set_value();
+            release_worker_future.wait();
+        }
+    };
+    setup.initAsyncCalls();
+    foo->callFnAsync();
+
+    std::promise<void> disconnected;
+    std::thread disconnect{[&] {
+        setup.server_disconnect();
+        disconnected.set_value();
+    }};
+    const auto stopping = worker_stopping_future.wait_for(std::chrono::seconds{5});
+    const auto complete = disconnected.get_future().wait_for(std::chrono::seconds{5});
+
+    // Always unblock the worker before checking the results. A synchronous
+    // join makes disconnect time out, but cleanup can still complete.
+    release_worker.set_value();
+    disconnect.join();
+    KJ_EXPECT(stopping == std::future_status::ready);
+    KJ_EXPECT(complete == std::future_status::ready);
+}
+
 KJ_TEST("Worker thread destroyed before it is initialized")
 {
     // Regression test for bitcoin/bitcoin#34711, bitcoin/bitcoin#34756 where a
