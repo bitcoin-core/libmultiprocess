@@ -708,7 +708,8 @@ using ConnThread = ConnThreads::iterator;
 // inserted bool.
 std::tuple<ConnThread, bool> SetThread(GuardedRef<ConnThreads> threads, Connection* connection, const std::function<Thread::Client()>& make_thread);
 
-//! Per-connection thread clients and their mutex, independent of the waiter.
+//! Heap-owned thread clients and their mutex. Disconnect callbacks refer to
+//! these maps, so they must outlive ThreadContext when cleanup is deferred.
 struct ThreadClients
 {
     //! Release all clients on their respective event loops without holding the
@@ -773,9 +774,12 @@ struct ThreadContext
     //! from potentially different connections, so ThreadClients::mutex guards
     //! shared map access. Each client's Cap'n Proto state is accessed only on its
     //! own event loop. The mutex must not be held while waiting for an event
-    //! loop, since disconnect callbacks lock it too. Explicit cleanup extracts
+    //! loop, since disconnect callbacks lock it too. Deferred cleanup extracts
     //! clients under the map mutex and destroys them after unlocking it.
-    ThreadClients clients;
+    //!
+    //! Heap storage lets the destructor hand cleanup to an async thread without
+    //! invalidating the map and mutex references captured by SetThread().
+    std::unique_ptr<ThreadClients> clients = std::make_unique<ThreadClients>();
 
     //! Whether this thread is a capnp event loop thread. Not really used except
     //! to assert false if there's an attempt to execute a blocking operation

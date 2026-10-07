@@ -495,7 +495,7 @@ ProxyServer<Thread>::~ProxyServer()
         // below. The maps contain Thread::Client objects that need to be
         // destroyed from the event loop thread (this thread), which can't
         // happen if this thread is busy calling join.
-        m_thread_context.clients.clear();
+        m_thread_context.clients->clear();
         //! Ping waiter.
         waiter->m_cv.notify_all();
     }
