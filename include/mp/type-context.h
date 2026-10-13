@@ -27,7 +27,7 @@ void CustomBuildField(TypeList<>,
     // Also store the Thread::Client reference in the callback_threads map so
     // future calls over this connection can reuse it.
     auto [callback_thread, _]{SetThread(
-        GuardedRef{thread_context.waiter->m_mutex, thread_context.callback_threads}, &connection,
+        GuardedRef{thread_context.clients->mutex, thread_context.clients->callback_threads}, &connection,
         [&] { return connection.m_threads.add(kj::heap<ProxyServer<Thread>>(connection, thread_context, std::thread{})); })};
 
     // Call remote ThreadMap.makeThread function so server will create a
@@ -45,7 +45,7 @@ void CustomBuildField(TypeList<>,
         return request.send().getResult(); // Nonblocking due to capnp request pipelining.
     }};
     auto [request_thread, _1]{SetThread(
-        GuardedRef{thread_context.waiter->m_mutex, thread_context.request_threads},
+        GuardedRef{thread_context.clients->mutex, thread_context.clients->request_threads},
         &connection, make_request_thread)};
 
     auto context = output.init();
@@ -94,7 +94,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
         // to the same thread already in the map, so there is no
         // need to update the map.
         auto& thread_context = CurrentThread();
-        auto& request_threads = thread_context.request_threads;
+        auto& request_threads = thread_context.clients->request_threads;
         ConnThread request_thread;
         bool inserted{false};
         Mutex cancel_mutex;
@@ -129,7 +129,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
             // cancel_monitor.m_canceled was checked above and this
             // code is running on the event loop thread.
             std::tie(request_thread, inserted) = SetThread(
-                GuardedRef{thread_context.waiter->m_mutex, request_threads}, server.m_context.connection,
+                GuardedRef{thread_context.clients->mutex, request_threads}, server.m_context.connection,
                 [&] { return Accessor::get(call_context.getParams()).getCallbackThread(); });
             // Initialize the request's results struct here on the event loop
             // thread, so later getResults() calls on the execution thread
@@ -180,12 +180,12 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                     // Look up the thread again without using existing
                     // iterator since entry may no longer be there after
                     // a disconnect. Destroy node after releasing
-                    // Waiter::m_mutex, so the ProxyClient<Thread>
+                    // ThreadClients::mutex, so the ProxyClient<Thread>
                     // destructor is able to use EventLoop::mutex
                     // without violating lock order.
                     ConnThreads::node_type removed;
                     {
-                        Lock lock(thread_context.waiter->m_mutex);
+                        Lock lock(thread_context.clients->mutex);
                         removed = request_threads.extract(server.m_context.connection);
                     }
                 }
