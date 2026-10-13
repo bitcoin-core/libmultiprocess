@@ -69,7 +69,11 @@ public:
 //! Context data associated with proxy client and server classes.
 struct ProxyContext
 {
-    Connection* connection;
+    //! Connection this proxy object is associated with. Holding shared
+    //! ownership (Connection objects are always owned by shared_ptr, see
+    //! Connection::make) guarantees the Connection outlives this proxy
+    //! object, so the pointer stays valid even after a disconnect.
+    std::shared_ptr<Connection> connection;
     EventLoopRef loop;
     CleanupList cleanup_fns;
 
