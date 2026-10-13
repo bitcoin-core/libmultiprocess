@@ -2,7 +2,11 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-cmake_minimum_required(VERSION 3.12)
+cmake_minimum_required(VERSION 3.12...4.1)
+
+if(BSD AND POLICY CMP0155)
+  cmake_policy(SET CMP0155 OLD)
+endif()
 
 project("Libmultiprocess" CXX)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
