@@ -219,8 +219,8 @@ template <class Fn>
 struct FunctionTraits;
 
 //! Specialization of above extracting result and params types assuming the
-//! template argument is a pointer-to-method type,
-//! decltype(&ClassName::methodName)
+//! template argument is a pointer-to-method type. Handles all four PMF
+//! cv-qualifier combinations by forwarding to this canonical form.
 template <class _Class, class _Result, class... _Params>
 struct FunctionTraits<_Result (_Class::*const)(_Params...)>
 {
@@ -241,6 +241,17 @@ struct FunctionTraits<_Result (_Class::*const)(_Params...)>
     template <size_t N>
     static decltype(auto) Fwd(Param<N>& arg) { return static_cast<Param<N>&&>(arg); }
 };
+// non-const pointer to non-const method
+template <class _Class, class _Result, class... _Params>
+struct FunctionTraits<_Result (_Class::*)(_Params...)>
+    : FunctionTraits<_Result (_Class::*const)(_Params...)> {};
+// (either pointer kind) to const method — collapses const-method distinction
+template <class _Class, class _Result, class... _Params>
+struct FunctionTraits<_Result (_Class::*const)(_Params...) const>
+    : FunctionTraits<_Result (_Class::*const)(_Params...)> {};
+template <class _Class, class _Result, class... _Params>
+struct FunctionTraits<_Result (_Class::*)(_Params...) const>
+    : FunctionTraits<_Result (_Class::*const)(_Params...)> {};
 
 //! Traits class for a proxy method, providing the same
 //! Params/Result/Param/Fields described in the FunctionTraits class above, plus
