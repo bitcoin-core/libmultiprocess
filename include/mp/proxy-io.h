@@ -18,6 +18,8 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <functional>
+#include <kj/async.h>
+#include <kj/exception.h>
 #include <kj/function.h>
 #include <kj/io.h>
 #include <map>
@@ -39,6 +41,17 @@ struct InvokeContext
 struct ClientInvokeContext : InvokeContext
 {
     ThreadContext& thread_context;
+    //! Callback that overloads can set while building a parameter to make a
+    //! function call cancelable. If set, clientInvoke calls it on the event loop
+    //! thread with the kj::Canceler object wrapping the request when the request is
+    //! sent, and with null when the request finishes and the canceler is destroyed.
+    std::function<void(kj::Canceler*)> set_canceler;
+    //! Callback that lets clients set a custom error handler for kj::Exception.
+    //! For example, a canceled request fails the same way a disconnect does,
+    //! and this is where the cancellation parameter can throw its own
+    //! exception instead. If set, clientInvoke calls it and rethrows anything
+    //! it throws.
+    std::function<void(const kj::Exception&)> handle_error;
     ClientInvokeContext(Connection& conn, ThreadContext& thread_context)
         : InvokeContext{conn}, thread_context{thread_context}
     {
@@ -58,14 +71,22 @@ struct ServerInvokeContext : InvokeContext
     //! results structs if the request is canceled while the worker thread is
     //! reading params (`call_context.getParams()`) or writing results
     //! (`call_context.getResults()`).
-    Lock* cancel_lock{nullptr};
+    Lock* request_lock{nullptr};
+    //! For IPC methods that execute asynchronously, not on the event-loop
+    //! thread: mutex request_lock refers to, set together with it. Null for
+    //! methods executing on the event-loop thread.
+    Mutex* request_mutex{nullptr};
     //! For IPC methods that execute asynchronously, not on the event-loop
     //! thread, this is set to true if the IPC call was canceled by the client
     //! or canceled by a disconnection. If the call runs on the event-loop
-    //! thread, it can't be canceled. This should be accessed with cancel_lock
+    //! thread, it can't be canceled. This should be accessed with request_lock
     //! held if it is not null, since in the asynchronous case it is accessed
     //! from multiple threads.
     bool request_canceled{false};
+    //! For IPC methods that execute asynchronously, not on the event-loop
+    //! thread: callback registered by a wrapped method. Runs when request
+    //! cancellation is detected.
+    std::function<void()> cancel_fn;
 
     ServerInvokeContext(ProxyServer& proxy_server, CallContext& call_context, int req)
         : InvokeContext{*proxy_server.m_context.connection}, proxy_server{proxy_server}, call_context{call_context}, req{req}
