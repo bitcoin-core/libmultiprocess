@@ -133,6 +133,25 @@ jobs:
           export PATH="$(brew --prefix llvm)/bin:$PATH"
           CI_CONFIG="ci/configs/macos.bash" bash ci/scripts/ci.sh
 
+  test-windows-cross:
+    runs-on: windows-latest
+    name: test • windows runner
+    needs: build-windows-cross
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-cross-build
+          path: windows-cross-artifact
+
+      - name: Run Windows tests
+        shell: pwsh
+        run: ci/scripts/windows_native_test.ps1 -ArtifactRoot windows-cross-artifact
+
   build:
     runs-on: ubuntu-latest
 
@@ -210,3 +229,20 @@ jobs:
       - *nix-install
       - *nix-cache
       - *nix-run
+
+      - name: Package Windows artifacts
+        env:
+          CI_CONFIG: ci/configs/${{ matrix.config }}.bash
+        run: |
+          source "$CI_CONFIG"
+          nix_args=("${NIX_ARGS[@]+"${NIX_ARGS[@]}"}")
+          if [[ -n "${CI_NIXPKGS_CHANNEL:-}" ]]; then
+            nix_args+=(-I "nixpkgs=channel:${CI_NIXPKGS_CHANNEL}")
+          fi
+          nix develop --ignore-environment --keep CI_CONFIG "${nix_args[@]}" -f shell.nix --command bash ci/scripts/windows_package.sh
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-cross-build
+          path: windows-cross-artifact
