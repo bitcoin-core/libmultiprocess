@@ -136,7 +136,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    env:
+    env: &nix-build-env
       CI_NIXPKGS_CHANNEL: nixos-26.05
       CI_NIX_CONFIG: |
         keep-env-derivations = true
@@ -148,20 +148,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        config: [default, llvm, gnu32, sanitize, olddeps, newdeps, windows]
+        config: [default, llvm, gnu32, sanitize, olddeps, newdeps]
 
     name: build • ${{ matrix.config }}
 
     steps:
-      - uses: actions/checkout@v5
+      - &nix-checkout
+        uses: actions/checkout@v5
 
-      - name: Determine CI configuration
+      - &nix-config
+        name: Determine CI configuration
         id: config
         env:
           CI_CONFIG: ci/configs/${{ matrix.config }}.bash
         run: ci/scripts/config.sh
 
-      - name: Install Nix
+      - &nix-install
+        name: Install Nix
         uses: cachix/install-nix-action@v31       # 2025-05-27, from https://github.com/cachix/install-nix-action/tags
         with:
           # Act executes inside an unprivileged container (Docker or Podman),
@@ -171,7 +174,8 @@ jobs:
             ${{ env.CI_NIX_CONFIG }}
             ${{ github.actor == 'nektos/act' && env.CI_NIX_CONFIG_ACT || '' }}
 
-      - name: Cache Nix store
+      - &nix-cache
+        name: Cache Nix store
         if: steps.config.outputs.cache_nix_store == 'true'
         uses: nix-community/cache-nix-action@v7
         with:
@@ -182,7 +186,27 @@ jobs:
             nix-${{ runner.os }}-
           gc-max-store-size-linux: 10G
 
-      - name: Run CI script
+      - &nix-run
+        name: Run CI script
         env:
           CI_CONFIG: ci/configs/${{ matrix.config }}.bash
         run: ci/scripts/run.sh
+
+  build-windows-cross:
+    runs-on: ubuntu-latest
+    env: *nix-build-env
+
+    # Keep the shared steps and cache keys using the same configuration context.
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [windows]
+
+    name: build • ${{ matrix.config }}
+
+    steps:
+      - *nix-checkout
+      - *nix-config
+      - *nix-install
+      - *nix-cache
+      - *nix-run
