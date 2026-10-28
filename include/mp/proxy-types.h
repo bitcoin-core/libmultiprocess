@@ -624,7 +624,8 @@ struct ServerExcept : Parent
 //! Helper for CustomPassField below. Call Accessor::get method if it has one,
 //! otherwise return capnp::Void.
 template <typename Accessor, typename Message>
-decltype(auto) MaybeGet(Message&& message, decltype(Accessor::get(message))* enable = nullptr)
+decltype(auto) MaybeGet(Message&& message)
+    requires requires { Accessor::get(message); }
 {
     return Accessor::get(message);
 }
