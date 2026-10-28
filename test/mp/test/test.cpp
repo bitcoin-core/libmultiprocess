@@ -138,6 +138,13 @@ public:
         client = client_promise.get_future().get();
     }
 
+    //! Exchange thread maps and configure a no-op callFnAsync() handler.
+    void initAsyncCalls()
+    {
+        client->initThreadMap();
+        server->m_impl->m_fn = [] {};
+    }
+
     ~TestSetup()
     {
         // Test that client cleanup_fns are executed.
@@ -469,6 +476,174 @@ KJ_TEST("Calling async IPC method with a remote disconnect while results are bui
     setup.server_disconnect();
 }
 
+KJ_TEST("Async cleanup can be queued from another thread")
+{
+    // Keep promises alive until setup has joined the async cleanup thread.
+    std::promise<int> first;
+    std::promise<int> second;
+    TestSetup setup;
+    EventLoop& loop = *setup.client->m_context.loop;
+    // Ensure loop() is active before posting from this test's thread.
+    loop.sync([] {});
+
+    loop.addAsyncCleanup([value = std::make_unique<int>(41), &first] {
+        first.set_value(*value);
+    });
+    KJ_EXPECT(first.get_future().get() == 41);
+
+    // Exercise notification after the async thread has already been started.
+    loop.addAsyncCleanup([value = std::make_unique<int>(42), &second] {
+        second.set_value(*value);
+    });
+    KJ_EXPECT(second.get_future().get() == 42);
+}
+
+KJ_TEST("Client thread exits before its connection closes")
+{
+    // Keep the connection open while a caller exits and releases its thread
+    // handles, then verify another caller can use it. The next test covers
+    // blocked event loops deterministically without platform-specific timing.
+    TestSetup setup;
+    auto* foo = setup.client.get();
+    foo->initThreadMap();
+    setup.server->m_impl->m_int_fn = [](int arg) { return arg + 1; };
+
+    // setup.client keeps the connection open while the caller's thread-local
+    // cleanup releases the remote worker.
+    std::thread caller{[&] { KJ_EXPECT(foo->callIntFnAsync(41) == 42); }};
+    caller.join();
+
+    // The connection remains usable after the first caller has gone away.
+    KJ_EXPECT(foo->callIntFnAsync(1) == 2);
+}
+
+KJ_TEST("Client thread exits while the event loop is blocked")
+{
+    // Model the loader-lock cycle portably: after making a call, let the
+    // client exit while its event loop is blocked. Thread-local destruction
+    // must return without waiting for sync(), even if the cleanup thread has
+    // not been started yet.
+    std::promise<void> exit_client;
+    auto exit_client_future = exit_client.get_future();
+    std::promise<void> loop_blocked;
+    std::promise<void> release_loop;
+    auto release_loop_future = release_loop.get_future();
+    std::promise<void> caller_done;
+    TestSetup setup;
+    auto* foo = setup.client.get();
+    EventLoop& loop = *foo->m_context.loop;
+    setup.initAsyncCalls();
+
+    std::thread caller{[&] {
+        foo->callFnAsync();
+        caller_done.set_value();
+        exit_client_future.wait();
+    }};
+    caller_done.get_future().get();
+    // Post the blocking task without waiting for it to complete.
+    loop.sync([&] {
+        loop.m_task_set->add(kj::evalLater([&] {
+            loop_blocked.set_value();
+            release_loop_future.wait();
+        }));
+    });
+    loop_blocked.get_future().get();
+
+    std::promise<void> caller_exited;
+    auto caller_exited_future = caller_exited.get_future();
+    std::thread joiner{[&] {
+        caller.join();
+        caller_exited.set_value();
+    }};
+    exit_client.set_value();
+    const auto exited = caller_exited_future.wait_for(std::chrono::seconds{5});
+    // Always release the loop before checking, so the unfixed code can finish.
+    release_loop.set_value();
+    joiner.join();
+    KJ_EXPECT(exited == std::future_status::ready);
+    // The connection remains usable after deferred client cleanup.
+    foo->callFnAsync();
+}
+
+KJ_TEST("Disconnect removes thread clients after their thread exits")
+{
+    // Hold the async thread so disconnect callbacks run after ThreadContext
+    // has been destroyed, but before its deferred client cleanup can run.
+    std::promise<void> cleanup_started;
+    std::promise<void> release_cleanup;
+    auto release_cleanup_future = release_cleanup.get_future();
+    TestSetup setup{/*client_owns_connection=*/false};
+    auto* foo = setup.client.get();
+    EventLoop& loop = *foo->m_context.loop;
+    setup.initAsyncCalls();
+    loop.addAsyncCleanup([&] {
+        cleanup_started.set_value();
+        release_cleanup_future.wait();
+    });
+    cleanup_started.get_future().get();
+    std::thread caller{[&] { foo->callFnAsync(); }};
+    caller.join();
+    setup.client_disconnect();
+    setup.server_disconnect();
+    release_cleanup.set_value();
+}
+
+KJ_TEST("Client thread exits after calls over different event loops")
+{
+    TestSetup first;
+    TestSetup second;
+    first.initAsyncCalls();
+    second.initAsyncCalls();
+    std::thread caller{[&] {
+        first.client->callFnAsync();
+        second.client->callFnAsync();
+    }};
+    caller.join();
+    // Each setup waits for its event loop to exit, including deferred cleanup.
+}
+
+KJ_TEST("Disconnect completes while a worker exits")
+{
+    // Keep the worker alive after it stops accepting work, and verify that
+    // disconnect and event-loop calls can complete before it finishes exiting.
+    // This complements client-exit coverage: moving client cleanup off the
+    // exiting thread does not by itself keep the event loop available here.
+
+    // These signals outlive setup, which waits for all worker cleanup.
+    std::promise<void> worker_stopping;
+    auto worker_stopping_future = worker_stopping.get_future();
+    std::promise<void> release_worker;
+    auto release_worker_future = release_worker.get_future();
+    TestSetup setup;
+    auto* foo = setup.client.get();
+    EventLoop& loop = *foo->m_context.loop;
+    EventLoopRef loop_ref{loop};
+    loop.testing_hook_misc = [&](std::any arg) {
+        if (const char* const* tag{std::any_cast<const char*>(&arg)};
+            tag && std::string_view{*tag} == "worker thread exit") {
+            worker_stopping.set_value();
+            release_worker_future.wait();
+        }
+    };
+    setup.initAsyncCalls();
+    foo->callFnAsync();
+
+    std::promise<void> disconnected;
+    std::thread disconnect{[&] {
+        setup.server_disconnect();
+        disconnected.set_value();
+    }};
+    const auto stopping = worker_stopping_future.wait_for(std::chrono::seconds{5});
+    const auto complete = disconnected.get_future().wait_for(std::chrono::seconds{5});
+
+    // Always unblock the worker before checking the results. A synchronous
+    // join makes disconnect time out, but cleanup can still complete.
+    release_worker.set_value();
+    disconnect.join();
+    KJ_EXPECT(stopping == std::future_status::ready);
+    KJ_EXPECT(complete == std::future_status::ready);
+}
+
 KJ_TEST("Worker thread destroyed before it is initialized")
 {
     // Regression test for bitcoin/bitcoin#34711, bitcoin/bitcoin#34756 where a
@@ -480,8 +655,7 @@ KJ_TEST("Worker thread destroyed before it is initialized")
     // the worker thread started waiting, causing a SIGSEGV when it did start.
     TestSetup setup;
     ProxyClient<messages::FooInterface>* foo = setup.client.get();
-    foo->initThreadMap();
-    setup.server->m_impl->m_fn = [] {};
+    setup.initAsyncCalls();
 
     EventLoop& loop = *setup.server->m_context.connection->m_loop;
     loop.testing_hook_makethread = [&] {
@@ -510,8 +684,7 @@ KJ_TEST("Calling async IPC method, with server disconnect racing the call")
     // calling call_context.getParams().
     TestSetup setup;
     ProxyClient<messages::FooInterface>* foo = setup.client.get();
-    foo->initThreadMap();
-    setup.server->m_impl->m_fn = [] {};
+    setup.initAsyncCalls();
 
     EventLoop& loop = *setup.server->m_context.connection->m_loop;
     loop.testing_hook_async_request_start = [&] {
@@ -537,8 +710,7 @@ KJ_TEST("Calling async IPC method, with server disconnect after cleanup")
     // scope.
     TestSetup setup;
     ProxyClient<messages::FooInterface>* foo = setup.client.get();
-    foo->initThreadMap();
-    setup.server->m_impl->m_fn = [] {};
+    setup.initAsyncCalls();
 
     EventLoop& loop = *setup.server->m_context.connection->m_loop;
     loop.testing_hook_async_request_done = [&] {
@@ -580,17 +752,16 @@ KJ_TEST("Make simultaneous IPC calls on single remote thread")
     ProxyClient<messages::FooInterface>* foo = setup.client.get();
     std::promise<void> signal;
 
-    foo->initThreadMap();
+    setup.initAsyncCalls();
     // Use callFnAsync() to get the client to set up the request_thread
     // that will be used for the test.
-    setup.server->m_impl->m_fn = [&] {};
     foo->callFnAsync();
     ThreadContext& tc{CurrentThread()};
     Thread::Client *callback_thread, *request_thread;
     foo->m_context.loop->sync([&] {
-        Lock lock(tc.waiter->m_mutex);
-        callback_thread = &tc.callback_threads.at(foo->m_context.connection)->m_client;
-        request_thread = &tc.request_threads.at(foo->m_context.connection)->m_client;
+        Lock lock(tc.clients->mutex);
+        callback_thread = &tc.clients->callback_threads.at(foo->m_context.connection)->m_client;
+        request_thread = &tc.clients->request_threads.at(foo->m_context.connection)->m_client;
     });
 
     // Call callIntFnAsync 3 times with n=100, 200, 300
