@@ -834,6 +834,10 @@ kj::Promise<void> serverInvoke(Server& server, CallContext& call_context, Fn fn)
     MP_LOG(loop, Log::Trace) << "request data: "
         << LogEscape(params.toString(), server.m_context.loop->m_log_opts.max_chars);
 
+    if (!server.m_impl) {
+        MP_LOG(loop, Log::Error) << "IPC server error request #" << req << ", method called after destroy";
+        throw std::runtime_error("method called after destroy");
+    }
     try {
         using ServerContext = ServerInvokeContext<Server, CallContext>;
         using ArgList = typename ProxyClientMethodTraits<typename Params::Reads>::Params;

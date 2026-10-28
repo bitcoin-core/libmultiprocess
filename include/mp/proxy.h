@@ -172,6 +172,12 @@ public:
      * wrapped. */
     std::shared_ptr<Impl> m_impl;
     ProxyContext m_context;
+    //! Number of requests queued or executing on worker threads.
+    //! Incremented in the mp.Context PassField overload before being posted and
+    //! decremented when completed or dropped. Requests executing on the
+    //! event-loop thread are excluded because they run to completion without
+    //! allowing another request to run.
+    int m_active_calls{0};
 };
 
 //! Customizable (through template specialization) base class which ProxyServer

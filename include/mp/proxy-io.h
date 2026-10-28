@@ -692,10 +692,23 @@ ProxyServerBase<Interface, Impl>::~ProxyServerBase()
 //! Context.thread parameter was passed, this method will run on the worker
 //! thread specified by the client. Otherwise it will run on the EventLoop
 //! thread, like other server methods without an assigned thread.
+//!
+//! Non-libmultiprocess clients can send destroy while other requests are
+//! running, so it is rejected in that case.
 template <typename Interface, typename Impl>
 void ProxyServerBase<Interface, Impl>::invokeDestroy()
 {
-    m_impl.reset();
+    // A destroy request with an mp.Context runs on a worker thread and is
+    // counted in m_active_calls itself.
+    const int self_count{std::this_thread::get_id() == m_context.loop->m_thread_id ? 0 : 1};
+    // Move m_impl out on the event loop thread, where serverInvoke checks it,
+    // and destroy it after returning to this thread.
+    std::shared_ptr<Impl> impl;
+    m_context.loop->sync([&] {
+        if (m_active_calls == self_count) impl = std::move(m_impl);
+    });
+    if (!impl) throw std::runtime_error("destroy called while other calls are in progress");
+    impl.reset();
     CleanupRun(m_context.cleanup_fns);
 }
 
