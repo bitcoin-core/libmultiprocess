@@ -6,9 +6,11 @@
 #define MP_TEST_FOO_H
 
 #include <cassert>
+#include <cstddef>
 #include <functional>
 #include <map>
 #include <memory>
+#include <memory_resource>
 #include <optional>
 #include <string>
 #include <set>
@@ -18,6 +20,12 @@
 namespace mp {
 namespace test {
 
+//! Hash function used to test std::unordered_set with a custom hash.
+struct FooHash
+{
+    size_t operator()(const std::string& str) const { return str.size(); }
+};
+
 struct FooStruct
 {
     std::string name;
@@ -26,6 +34,11 @@ struct FooStruct
     std::optional<int> optional_int;
     std::unordered_set<int> unordered_set_int;
     std::map<std::string, int> map_string_int;
+    // Containers with non-default comparator, allocator, and hash types.
+    std::set<int, std::greater<>> set_int_desc;
+    std::pmr::vector<int> pmr_vector_int;
+    std::unordered_set<std::string, FooHash> unordered_set_string_hash;
+    std::map<std::string, int, std::greater<>> map_string_int_desc;
 };
 
 enum class FooEnum : uint8_t { ONE = 1, TWO = 2, };

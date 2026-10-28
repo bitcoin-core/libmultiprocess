@@ -72,6 +72,10 @@ struct FooStruct $Proxy.wrap("mp::test::FooStruct") {
     hasOptionalInt @4 :Bool;
     unorderedSetInt @5 :List(Int32) $Proxy.name("unordered_set_int");
     mapStringInt @6 :List(StringIntPair) $Proxy.name("map_string_int");
+    setIntDesc @7 :List(Int32) $Proxy.name("set_int_desc");
+    pmrVectorInt @8 :List(Int32) $Proxy.name("pmr_vector_int");
+    unorderedSetStringHash @9 :List(Text) $Proxy.name("unordered_set_string_hash");
+    mapStringIntDesc @10 :List(StringIntPair) $Proxy.name("map_string_int_desc");
 }
 
 struct FooCustom $Proxy.wrap("mp::test::FooCustom") {
