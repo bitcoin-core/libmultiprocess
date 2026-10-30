@@ -249,6 +249,17 @@ KJ_TEST("Call FooInterface methods")
     KJ_EXPECT(custom_in.v2 == custom_out.v2);
     KJ_EXPECT(custom_in.v3 == custom_out.v3);
 
+    std::vector<int> pinned_in = {1, 2, 3};
+    Pinned<std::vector<int>> pinned_out = foo->returnPinned(pinned_in);
+    KJ_EXPECT(pinned_out.value == pinned_in);
+
+    try {
+        foo->throwPinned(pinned_in);
+        KJ_FAIL_EXPECT("throwPinned should have thrown");
+    } catch (const Pinned<std::vector<int>>& e) {
+        KJ_EXPECT(e.value == pinned_in);
+    }
+
     foo->passEmpty(FooEmpty{});
 
     FooData empty_data_out = foo->passData(FooData{});

@@ -41,6 +41,24 @@ struct FooEmpty
 {
 };
 
+// Test type that has no default constructor and cannot be copied or moved.
+// Used to stress-test the serialization framework's ReadDestTemp path.
+template <typename T>
+struct Pinned {
+    T value;
+    explicit Pinned(T v) : value(std::move(v)) {}
+    Pinned() = delete;
+    Pinned(const Pinned&) = delete;
+    Pinned& operator=(const Pinned&) = delete;
+    Pinned(Pinned&&) = delete;
+    Pinned& operator=(Pinned&&) = delete;
+};
+
+// Alias for the throwPinned exception type, so code generated from the
+// $Proxy.exception annotation in foo.capnp only names types declared in this
+// header and IWYU does not require generated files to include <vector>.
+using PinnedVector = Pinned<std::vector<int>>;
+
 struct FooMessage
 {
     std::string message;
@@ -105,6 +123,8 @@ public:
     int callbackSaved(int arg) { return m_callback->call(arg); }
     int callbackExtended(ExtendedCallback& callback, int arg) { return callback.callExtended(arg); }
     FooCustom passCustom(FooCustom foo) { return foo; }
+    Pinned<std::vector<int>> returnPinned(std::vector<int> vec) { return Pinned<std::vector<int>>{std::move(vec)}; }
+    [[noreturn]] void throwPinned(std::vector<int> vec) { throw PinnedVector{std::move(vec)}; }
     FooEmpty passEmpty(FooEmpty foo) { return foo; }
     FooData passData(FooData foo) { return foo; }
     FooMessage passMessage(FooMessage foo) { foo.message += " call"; return foo; }
