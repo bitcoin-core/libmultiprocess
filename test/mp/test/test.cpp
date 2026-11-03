@@ -174,6 +174,10 @@ KJ_TEST("Call FooInterface methods")
     in.optional_int = 3;
     in.map_string_int.emplace("a", 1);
     in.map_string_int.emplace("b", 2);
+    in.set_int_desc = {1, 2, 3};
+    in.pmr_vector_int = {3, 1, 2};
+    in.unordered_set_string_hash = {"a", "bb"};
+    in.map_string_int_desc = {{"a", 1}, {"b", 2}};
     FooStruct out = foo->pass(in);
     KJ_EXPECT(in.name == out.name);
     KJ_EXPECT(in.set_int.size() == out.set_int.size());
@@ -194,6 +198,10 @@ KJ_TEST("Call FooInterface methods")
         KJ_EXPECT(init->first == outit->first);
         KJ_EXPECT(init->second == outit->second);
     }
+    KJ_EXPECT(in.set_int_desc == out.set_int_desc);
+    KJ_EXPECT(in.pmr_vector_int == out.pmr_vector_int);
+    KJ_EXPECT(in.unordered_set_string_hash == out.unordered_set_string_hash);
+    KJ_EXPECT(in.map_string_int_desc == out.map_string_int_desc);
 
     // Additional checks for std::optional member
     KJ_EXPECT(foo->pass(in).optional_int == 3);
