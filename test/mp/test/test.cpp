@@ -770,5 +770,72 @@ KJ_TEST("Call async IPC method without thread or pool errors correctly")
     KJ_EXPECT(error_thrown);
 }
 
+//! Set testing_hook_misc to call fn when the hook is called with the given tag.
+static void SetMiscHook(EventLoop& loop, std::string_view tag, std::function<void()> fn)
+{
+    loop.sync([&] {
+        loop.testing_hook_misc = [tag, fn = std::move(fn)](std::any arg) {
+            if (const char* const* arg_tag{std::any_cast<const char*>(&arg)}; arg_tag && *arg_tag == tag) fn();
+        };
+    });
+}
+
+KJ_TEST("EventLoop::sync rethrows callback exceptions in the calling thread")
+{
+    TestSetup setup;
+    EventLoop& loop{*setup.client->m_context.loop};
+    EXPECT_EXCEPTION(loop.sync([] { throw std::runtime_error("sync callback failed"); }), "sync callback failed");
+    // The event loop keeps running after the exception.
+    KJ_EXPECT(setup.client->add(1, 2) == 3);
+}
+
+KJ_TEST("Calling IPC method when building the request throws")
+{
+    // clientInvoke builds the request inside EventLoop::sync. Before sync()
+    // rethrew exceptions, an exception there was logged and dropped, and the
+    // calling thread waited forever for a response to a request that was
+    // never sent.
+    TestSetup setup;
+    ProxyClient<messages::FooInterface>* foo = setup.client.get();
+    EventLoop& loop{*foo->m_context.loop};
+    SetMiscHook(loop, "build FooMessage", [] { throw std::runtime_error("build FooMessage failed"); });
+    FooMessage message;
+    message.message = "init";
+    EXPECT_EXCEPTION(foo->passMessage(message), "build FooMessage failed");
+
+    // The same client can make calls after the failure.
+    SetMiscHook(loop, "", [] {});
+    KJ_EXPECT(foo->passMessage(message).message == "init build read call build read");
+}
+
+KJ_TEST("Calling async IPC method when setting the cancel callback throws")
+{
+    // The server installs the cancellation callback for an async method
+    // inside EventLoop::sync. Before sync() rethrew exceptions, a failure
+    // there was logged and dropped, and the method ran without the
+    // cancellation callback.
+    TestSetup setup;
+    ProxyClient<messages::FooInterface>* foo = setup.client.get();
+    foo->initThreadMap();
+    bool called{false};
+    setup.server->m_impl->m_fn = [&] { called = true; };
+    EventLoop& loop{*foo->m_context.loop};
+    SetMiscHook(loop, "set cancel callback", [] { throw std::runtime_error("set cancel callback failed"); });
+    bool threw{false};
+    try {
+        foo->callFnAsync();
+    } catch (const std::runtime_error& e) {
+        threw = true;
+        KJ_EXPECT(std::string_view{e.what()}.find("set cancel callback failed") != std::string_view::npos, e.what());
+    }
+    KJ_EXPECT(threw);
+    KJ_EXPECT(!called);
+
+    // The same client can make calls after the failure.
+    SetMiscHook(loop, "", [] {});
+    foo->callFnAsync();
+    KJ_EXPECT(called);
+}
+
 } // namespace test
 } // namespace mp
