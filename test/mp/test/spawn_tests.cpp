@@ -67,7 +67,7 @@ KJ_TEST("SpawnProcess does not run callback in child")
     std::thread locker([&] {
         std::unique_lock<std::mutex> target_lock(target_mutex);
         {
-            std::lock_guard<std::mutex> g(control_mutex);
+            std::scoped_lock g{control_mutex};
             locked = true;
         }
         control_cv.notify_one();
@@ -89,7 +89,7 @@ KJ_TEST("SpawnProcess does not run callback in child")
         // test failures.
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
         {
-            std::lock_guard<std::mutex> g(control_mutex);
+            std::scoped_lock g{control_mutex};
             release = true;
         }
         control_cv.notify_one();
@@ -98,7 +98,7 @@ KJ_TEST("SpawnProcess does not run callback in child")
     const auto [pid, socket]{SpawnProcess([&](SpawnConnectInfo connect_info) -> std::vector<std::string> {
         // If this callback runs in the post-fork child, target_mutex appears
         // locked forever (the owning thread does not exist), so this deadlocks.
-        std::lock_guard<std::mutex> g(target_mutex);
+        std::scoped_lock g{target_mutex};
         return {"true", std::move(connect_info)};
     })};
     ::close(socket);
