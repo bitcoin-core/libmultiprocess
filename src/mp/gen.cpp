@@ -205,7 +205,7 @@ struct FieldList
     }
 };
 
-std::string AccessorType(kj::StringPtr base_name, const Field& field)
+static std::string AccessorType(kj::StringPtr base_name, const Field& field)
 {
     const auto& f = field.param_is_set ? field.param : field.result;
     const auto field_name = f.getProto().getName();
