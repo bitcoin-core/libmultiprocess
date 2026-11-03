@@ -10,6 +10,7 @@
 #include <mp/type-threadmap.h>
 #include <mp/util.h>
 
+#include <any>
 #include <atomic>
 #include <capnp/capability.h>
 #include <capnp/common.h> // IWYU pragma: keep
@@ -52,7 +53,10 @@ Stream MakeStream(EventLoop&loop, SocketId socket)
 {
     Stream stream;
     loop.sync([&]() {
-        stream = loop.m_io_context.lowLevelProvider->wrapSocketFd(socket, kj::LowLevelAsyncIoProvider::TAKE_OWNERSHIP);
+        stream = WrapSocket(socket, [&] {
+            if (loop.testing_hook_misc) loop.testing_hook_misc("wrap socket");
+            return loop.m_io_context.lowLevelProvider->wrapSocketFd(socket, kj::LowLevelAsyncIoProvider::TAKE_OWNERSHIP);
+        });
     });
     return stream;
 }
