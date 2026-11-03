@@ -133,10 +133,29 @@ jobs:
           export PATH="$(brew --prefix llvm)/bin:$PATH"
           CI_CONFIG="ci/configs/macos.bash" bash ci/scripts/ci.sh
 
+  test-windows-cross:
+    runs-on: windows-latest
+    name: test • windows runner
+    needs: build-windows-cross
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-cross-build
+          path: windows-cross-artifact
+
+      - name: Run Windows tests
+        shell: pwsh
+        run: ci/scripts/windows_native_test.ps1 -ArtifactRoot windows-cross-artifact
+
   build:
     runs-on: ubuntu-latest
 
-    env:
+    env: &nix-build-env
       CI_NIXPKGS_CHANNEL: nixos-26.05
       CI_NIX_CONFIG: |
         keep-env-derivations = true
@@ -153,15 +172,18 @@ jobs:
     name: build • ${{ matrix.config }}
 
     steps:
-      - uses: actions/checkout@v5
+      - &nix-checkout
+        uses: actions/checkout@v5
 
-      - name: Determine CI configuration
+      - &nix-config
+        name: Determine CI configuration
         id: config
         env:
           CI_CONFIG: ci/configs/${{ matrix.config }}.bash
         run: ci/scripts/config.sh
 
-      - name: Install Nix
+      - &nix-install
+        name: Install Nix
         uses: cachix/install-nix-action@v31       # 2025-05-27, from https://github.com/cachix/install-nix-action/tags
         with:
           # Act executes inside an unprivileged container (Docker or Podman),
@@ -171,7 +193,8 @@ jobs:
             ${{ env.CI_NIX_CONFIG }}
             ${{ github.actor == 'nektos/act' && env.CI_NIX_CONFIG_ACT || '' }}
 
-      - name: Cache Nix store
+      - &nix-cache
+        name: Cache Nix store
         if: steps.config.outputs.cache_nix_store == 'true'
         uses: nix-community/cache-nix-action@v7
         with:
@@ -182,7 +205,44 @@ jobs:
             nix-${{ runner.os }}-
           gc-max-store-size-linux: 10G
 
-      - name: Run CI script
+      - &nix-run
+        name: Run CI script
         env:
           CI_CONFIG: ci/configs/${{ matrix.config }}.bash
         run: ci/scripts/run.sh
+
+  build-windows-cross:
+    runs-on: ubuntu-latest
+    env: *nix-build-env
+
+    # Keep the shared steps and cache keys using the same configuration context.
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [windows]
+
+    name: build • ${{ matrix.config }}
+
+    steps:
+      - *nix-checkout
+      - *nix-config
+      - *nix-install
+      - *nix-cache
+      - *nix-run
+
+      - name: Package Windows artifacts
+        env:
+          CI_CONFIG: ci/configs/${{ matrix.config }}.bash
+        run: |
+          source "$CI_CONFIG"
+          nix_args=("${NIX_ARGS[@]+"${NIX_ARGS[@]}"}")
+          if [[ -n "${CI_NIXPKGS_CHANNEL:-}" ]]; then
+            nix_args+=(-I "nixpkgs=channel:${CI_NIXPKGS_CHANNEL}")
+          fi
+          nix develop --ignore-environment --keep CI_CONFIG "${nix_args[@]}" -f shell.nix --command bash ci/scripts/windows_package.sh
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-cross-build
+          path: windows-cross-artifact
