@@ -50,7 +50,12 @@ let
           "-g"
         ];
     };
-  })).override (lib.optionalAttrs enableLibcxx { clangStdenv = llvm.libcxxStdenv; });
+  })).override (lib.optionalAttrs enableLibcxx { clangStdenv = llvm.libcxxStdenv; }
+    # On i686, GCC and clang handle empty structs differently, causing an
+    # ABI mismatch and segfaulting in calls to functions like
+    # kj::str(kj::Exception). Prevent this by compiling capnproto with the
+    # same toolchain as libmultiprocess.
+    // lib.optionalAttrs crossPkgs.stdenv.hostPlatform.isx86_32 { clangStdenv = crossPkgs.stdenv; });
   clang = if enableLibcxx then llvm.libcxxClang else llvm.clang;
   clang-tools = llvm.clang-tools.override { inherit enableLibcxx; };
   cmakeHashes = {
