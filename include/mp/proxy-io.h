@@ -21,6 +21,7 @@
 #include <kj/function.h>
 #include <kj/io.h>
 #include <map>
+#include <new>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -217,6 +218,27 @@ std::string LongThreadName(const char* exe_name);
 
 //! Wrap a socket file descriptor as an async stream, taking ownership of the fd.
 Stream MakeStream(EventLoop&loop, SocketId socket);
+
+//! Call a KJ function that wraps a socket and takes ownership of it, and close
+//! the socket if the function fails to allocate the wrapper object.
+//!
+//! The socket is closed only on std::bad_alloc, because KJ wrapper objects
+//! take ownership of the socket in their first base class constructor, before
+//! they register the socket with epoll or kqueue. If registration fails, the
+//! KJ object closes the socket itself while it is being destroyed, and
+//! closing it again here could close an unrelated descriptor reusing the same
+//! number.
+template <typename Fn>
+auto WrapSocket(SocketId socket, Fn&& fn) -> decltype(fn())
+{
+    try {
+        return fn();
+    } catch (const std::bad_alloc&) {
+        // No KJ object owns the socket, so close it while rethrowing.
+        kj::AutoCloseFd owner{socket};
+        throw;
+    }
+}
 
 //! Event loop implementation.
 //!
@@ -940,8 +962,12 @@ template <typename InitInterface, typename InitImpl>
 void ListenConnections(EventLoop& loop, SocketId fd, InitImpl& init, std::optional<size_t> max_connections = std::nullopt)
 {
     loop.sync([&]() {
+        auto receiver{WrapSocket(fd, [&] {
+            if (loop.testing_hook_misc) loop.testing_hook_misc("wrap listen socket");
+            return loop.m_io_context.lowLevelProvider->wrapListenSocketFd(fd, kj::LowLevelAsyncIoProvider::TAKE_OWNERSHIP);
+        })};
         auto listener{std::make_shared<Listener>(
-            loop.m_io_context.lowLevelProvider->wrapListenSocketFd(fd, kj::LowLevelAsyncIoProvider::TAKE_OWNERSHIP),
+            kj::mv(receiver),
             max_connections)};
         _Listen<InitInterface>(listener, loop, init);
     });

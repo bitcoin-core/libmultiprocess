@@ -6,14 +6,17 @@
 #include <mp/test/foo.capnp.proxy.h>
 
 #include <any>
+#include <array>
 #include <atomic>
 #include <capnp/capability.h>
 #include <capnp/rpc.h>
 #include <cassert>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <fcntl.h>
 #include <functional>
 #include <future>
 #include <kj/async.h>
@@ -26,6 +29,7 @@
 #include <kj/string.h>
 #include <kj/test.h>
 #include <map>
+#include <new>
 #include <memory>
 #include <mp/config.h>
 #include <mp/proxy.h>
@@ -780,6 +784,13 @@ static void SetMiscHook(EventLoop& loop, std::string_view tag, std::function<voi
     });
 }
 
+//! Return whether the file descriptor is closed.
+static bool IsClosed(SocketId fd)
+{
+    errno = 0;
+    return fcntl(fd, F_GETFD) == -1 && errno == EBADF;
+}
+
 KJ_TEST("EventLoop::sync rethrows callback exceptions in the calling thread")
 {
     TestSetup setup;
@@ -806,6 +817,40 @@ KJ_TEST("Calling IPC method when building the request throws")
     // The same client can make calls after the failure.
     SetMiscHook(loop, "", [] {});
     KJ_EXPECT(foo->passMessage(message).message == "init build read call build read");
+}
+
+KJ_TEST("Socket is closed and the error is reported when wrapping it fails")
+{
+    // MakeStream and ListenConnections wrap the socket inside EventLoop::sync.
+    // Before sync() rethrew exceptions, a failure there was logged and
+    // dropped, so MakeStream returned a null stream and ListenConnections
+    // returned as if it were listening. Also, if allocating the KJ wrapper
+    // object failed, nothing closed the socket.
+    TestSetup setup;
+    EventLoop& loop{*setup.client->m_context.loop};
+    auto sockets{SocketPair()};
+
+    SetMiscHook(loop, "wrap socket", [] { throw std::bad_alloc{}; });
+    bool stream_threw{false};
+    try {
+        (void)MakeStream(loop, sockets[0]);
+    } catch (const std::bad_alloc&) {
+        stream_threw = true;
+    }
+    KJ_EXPECT(stream_threw);
+    KJ_EXPECT(IsClosed(sockets[0]));
+
+    SetMiscHook(loop, "wrap listen socket", [] { throw std::bad_alloc{}; });
+    FooImplementation foo_impl;
+    bool listen_threw{false};
+    try {
+        ListenConnections<messages::FooInterface>(loop, sockets[1], foo_impl);
+    } catch (const std::bad_alloc&) {
+        listen_threw = true;
+    }
+    KJ_EXPECT(listen_threw);
+    KJ_EXPECT(IsClosed(sockets[1]));
+    SetMiscHook(loop, "", [] {});
 }
 
 KJ_TEST("Calling async IPC method when setting the cancel callback throws")
