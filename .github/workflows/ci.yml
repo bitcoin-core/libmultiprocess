@@ -28,7 +28,7 @@ jobs:
             capnproto-cppflags: 'CPPFLAGS="-DKJ_NO_EXCEPTIONS=0"'
             env_vars: 'CXXFLAGS="-DKJ_NO_EXCEPTIONS=0"'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Start NetBSD VM
         uses: vmactions/netbsd-vm@v1
@@ -78,7 +78,7 @@ jobs:
       run:
         shell: openbsd {0}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Start OpenBSD VM
         uses: vmactions/openbsd-vm@v1
@@ -100,7 +100,7 @@ jobs:
       run:
         shell: freebsd {0}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Start FreeBSD VM
         uses: vmactions/freebsd-vm@v1
@@ -120,7 +120,7 @@ jobs:
     name: build • macos
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install dependencies
         env:
@@ -153,7 +153,7 @@ jobs:
     name: build • ${{ matrix.config }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Determine CI configuration
         id: config
