@@ -28,6 +28,7 @@
 #include <kj/string.h>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <map>
 #include <memory>
 #include <optional>
@@ -287,12 +288,18 @@ void EventLoop::sync(kj::FunctionParam<void()> fn)
         fn();
         return;
     }
-    // fn throwing is never expected. If it does happen, the caller of
-    // EventLoop::sync() will return without any indication of failure, which
-    // will likely cause other bugs. Log the error and continue.
-    KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&]() { m_executor.executeSync(fn); })) {
-        MP_LOG(*this, Log::Error) << "EventLoop: m_executor.executeSync threw: " << kj::str(*exception).cStr();
-    }
+    // Catch any exception fn() throws on the event loop thread and rethrow it
+    // below, so callers see the same exception they would see if fn() were
+    // called directly.
+    std::exception_ptr exception;
+    m_executor.executeSync([&] {
+        try {
+            fn();
+        } catch (...) {
+            exception = std::current_exception();
+        }
+    });
+    if (exception) std::rethrow_exception(exception);
 }
 
 void EventLoop::startAsyncThread()
