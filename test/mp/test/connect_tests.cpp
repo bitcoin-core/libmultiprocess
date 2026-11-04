@@ -136,7 +136,7 @@ KJ_TEST("ConnectStream handles a disconnect when no client calls are made")
 
     TestSetup setup([&](LogMessage log) {
         if (log.level == Log::Warning && log.message.find("unexpected network disconnect") != std::string::npos) {
-            const std::lock_guard<std::mutex> lock(mutex);
+            const std::scoped_lock lock{mutex};
             warned = true;
             cv.notify_all();
         }
