@@ -286,11 +286,39 @@ EventLoop::~EventLoop()
     // cleanup.wait(m_io_context.waitScope);
 }
 
+namespace {
+#if CAPNP_VERSION < 1002000
+//! Ignore "can't advance backwards in time" errors from Cap'n Proto versions
+//! before 1.2, which raise them when CLOCK_MONOTONIC briefly goes backwards
+//! (https://github.com/capnproto/capnproto/issues/2261). Returning lets
+//! TimerImpl::advanceTo() keep the previous time, like newer versions do.
+class ClockErrorCallback : public kj::ExceptionCallback
+{
+public:
+    explicit ClockErrorCallback(EventLoop& loop) : m_loop(loop) {}
+    void onRecoverableException(kj::Exception&& exception) override
+    {
+        if (exception.getType() == kj::Exception::Type::FAILED &&
+            exception.getDescription().endsWith("can't advance backwards in time")) {
+            MP_LOG(m_loop, Log::Warning) << "EventLoop: ignoring non-monotonic clock read.";
+            return;
+        }
+        next.onRecoverableException(kj::mv(exception));
+    }
+    EventLoop& m_loop;
+};
+#endif
+} // namespace
+
 void EventLoop::loop()
 {
     assert(!CurrentThread().loop_thread);
     CurrentThread().loop_thread = true;
     KJ_DEFER(CurrentThread().loop_thread = false);
+#if CAPNP_VERSION < 1002000
+    // Registered with KJ for this thread until loop() returns.
+    ClockErrorCallback clock_error_callback{*this};
+#endif
 
     {
         const Lock lock(m_mutex);
