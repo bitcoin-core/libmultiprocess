@@ -129,7 +129,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
             // cancel_monitor.m_canceled was checked above and this
             // code is running on the event loop thread.
             std::tie(request_thread, inserted) = SetThread(
-                GuardedRef{thread_context.waiter->m_mutex, request_threads}, server.m_context.connection,
+                GuardedRef{thread_context.waiter->m_mutex, request_threads}, server.m_context.connection.get(),
                 [&] { return Accessor::get(call_context.getParams()).getCallbackThread(); });
             // Initialize the request's results struct here on the event loop
             // thread, so later getResults() calls on the execution thread
@@ -179,14 +179,14 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                 if (erase_thread) {
                     // Look up the thread again without using existing
                     // iterator since entry may no longer be there after
-                    // a disconnect. Destroy node after releasing
-                    // Waiter::m_mutex, so the ProxyClient<Thread>
-                    // destructor is able to use EventLoop::mutex
-                    // without violating lock order.
+                    // a disconnect. Destroy the node after releasing
+                    // Waiter::m_mutex, so ~ProxyClient<Thread> does not
+                    // run with the mutex held (see the SetThread
+                    // disconnect callback).
                     ConnThreads::node_type removed;
                     {
                         Lock lock(thread_context.waiter->m_mutex);
-                        removed = request_threads.extract(server.m_context.connection);
+                        removed = request_threads.extract(server.m_context.connection.get());
                     }
                 }
             });
@@ -215,7 +215,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
     if (!context_arg.hasThread()) {
         // No client thread specified — dispatch through the server thread
         // pool, picking the slot with the smallest in-flight depth.
-        auto* connection = server.m_context.connection;
+        auto* connection = server.m_context.connection.get();
         auto& pool = connection->m_thread_pool;
         if (pool.empty()) {
             MP_LOG(loop, Log::Error)
