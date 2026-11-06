@@ -26,15 +26,31 @@ capnp_prefix=
 if [ -n "${CAPNP_CHECKOUT-}" ]; then
   capnp_prefix="$PWD/capnp-install"
   [ -e "capnp" ] || git clone -b "${CAPNP_CHECKOUT}" "https://github.com/capnproto/capnproto" capnp
-  mkdir -p capnp/build
-  (
-    cd capnp/build
-    git --no-pager log -1 || true
-    CXXFLAGS="-std=c++20" cmake .. "-DCMAKE_INSTALL_PREFIX=${capnp_prefix}" -DBUILD_TESTING=OFF -DWITH_OPENSSL=OFF -DWITH_ZLIB=OFF
-    cmake --build .
-    cmake --build . --target install  # Replacement for modern "cmake --install .".
-  )
+  if [ "${CAPNP_BUILD-}" = "autotools-static" ]; then
+    (
+      cd capnp/c++
+      git --no-pager log -1 || true
+      autoreconf -i
+      ./configure --prefix="${capnp_prefix}" \
+                  --disable-shared \
+                  --enable-static \
+                  --without-openssl \
+                  --without-zlib \
+                  CXXFLAGS="-std=c++20"
+      make -j"$(nproc)" install
+    )
+  else
+    mkdir -p capnp/build
+    (
+      cd capnp/build
+      git --no-pager log -1 || true
+      CXXFLAGS="-std=c++20" cmake .. "-DCMAKE_INSTALL_PREFIX=${capnp_prefix}" -DBUILD_TESTING=OFF -DWITH_OPENSSL=OFF -DWITH_ZLIB=OFF
+      cmake --build .
+      cmake --build . --target install  # Replacement for modern "cmake --install .".
+    )
+  fi
   export CMAKE_PREFIX_PATH="${capnp_prefix}:${CMAKE_PREFIX_PATH-}"
+  export PKG_CONFIG_PATH="${capnp_prefix}/lib/pkgconfig:${PKG_CONFIG_PATH-}"
 fi
 
 src_dir=$PWD
