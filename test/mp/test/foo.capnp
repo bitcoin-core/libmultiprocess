@@ -26,6 +26,8 @@ interface FooInterface $Proxy.wrap("mp::test::FooImplementation") {
     callbackSaved @9 (context :Proxy.Context, arg: Int32) -> (result :Int32);
     callbackExtended @10 (context :Proxy.Context, callback :ExtendedCallback, arg: Int32) -> (result :Int32);
     passCustom @11 (arg :FooCustom) -> (result :FooCustom);
+    returnPinned @27 (vec :List(Int32)) -> (result :List(Int32));
+    throwPinned @28 (vec :List(Int32)) -> (error :List(Int32) $Proxy.exception("mp::test::PinnedVector"));
     passEmpty @12 (arg :FooEmpty) -> (result :FooEmpty);
     passData @24 (arg :Data) -> (result :Data);
     passMessage @13 (arg :FooMessage) -> (result :FooMessage);
