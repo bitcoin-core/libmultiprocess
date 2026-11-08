@@ -351,10 +351,23 @@ SocketId StartSpawned(const SpawnConnectInfo& connect_info)
 
 std::array<SocketId, 2> SocketPair()
 {
+    // Set FD_CLOEXEC atomically when possible. Setting it with fcntl() after
+    // socketpair() leaves a window where a fork() in another thread can leak
+    // the descriptors into an unrelated child process. SpawnProcess relies on
+    // FD_CLOEXEC to close its error-reporting socket on successful exec, and
+    // SOCK_CLOEXEC sets the same descriptor flag.
     int pair[2];
+#ifdef SOCK_CLOEXEC
+    KJ_SYSCALL(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair));
+#else
     KJ_SYSCALL(socketpair(AF_UNIX, SOCK_STREAM, 0, pair));
-    KJ_SYSCALL(fcntl(pair[0], F_SETFD, FD_CLOEXEC));
-    KJ_SYSCALL(fcntl(pair[1], F_SETFD, FD_CLOEXEC));
+    if (fcntl(pair[0], F_SETFD, FD_CLOEXEC) == -1 || fcntl(pair[1], F_SETFD, FD_CLOEXEC) == -1) {
+        const int err = errno;
+        (void)close(pair[0]);
+        (void)close(pair[1]);
+        KJ_FAIL_SYSCALL("fcntl", err);
+    }
+#endif
     return {pair[0], pair[1]};
 }
 
