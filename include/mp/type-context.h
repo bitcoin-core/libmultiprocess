@@ -10,6 +10,8 @@
 
 #include <kj/string.h>
 
+#include <exception>
+
 namespace mp {
 template <typename Output>
     requires FieldTypeIs<Output, Context::Builder>
@@ -100,7 +102,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
         Mutex cancel_mutex;
         Lock cancel_lock{cancel_mutex};
         server_context.cancel_lock = &cancel_lock;
-        loop.sync([&] {
+        auto setup = [&] {
             // Detect request being canceled before it executes.
             if (cancel_monitor.m_canceled) {
                 server_context.request_canceled = true;
@@ -108,6 +110,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
             }
             // Detect request being canceled while it executes.
             assert(!cancel_monitor.m_on_cancel);
+            if (loop.testing_hook_misc) loop.testing_hook_misc("set cancel callback");
             cancel_monitor.m_on_cancel = [&loop, &server_context, &cancel_mutex, req]() {
                 MP_LOG(loop, Log::Info) << "IPC server request #" << req << " canceled while executing.";
                 // Lock cancel_mutex here to block the event loop
@@ -143,6 +146,18 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
             // future change accessing other call_context state needs to move
             // that access to the event loop thread the same way.
             call_context.getResults();
+        };
+        // If setup() throws, catch the exception here instead of letting
+        // sync() rethrow it right away, and rethrow it below after the KJ_DEFER
+        // cleanup is in place, so the cancellation callback is cleared and the
+        // self reference is released on the event loop thread.
+        std::exception_ptr setup_exception;
+        loop.sync([&] {
+            try {
+                setup();
+            } catch (...) {
+                setup_exception = std::current_exception();
+            }
         });
 
         // If an entry was inserted into the request_threads map,
@@ -191,6 +206,7 @@ auto PassField(Priority<1>, TypeList<>, ServerContext& server_context, const Fn&
                 }
             });
         );
+        if (setup_exception) std::rethrow_exception(setup_exception);
         if (server_context.request_canceled) {
             MP_LOG(loop, Log::Info) << "IPC server request #" << req << " canceled before it could be executed";
         } else KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&]{
