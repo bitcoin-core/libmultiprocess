@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <kj/common.h>
 #include <kj/debug.h>
+#include <kj/io.h>
 #include <kj/string-tree.h>
 #include <optional>
 #include <pthread.h>
@@ -252,9 +253,11 @@ std::string LogEscape(const kj::StringTree& string, size_t max_size)
 std::tuple<ProcessId, SocketId> SpawnProcess(SpawnConnectInfoToArgsFn&& connect_info_to_args)
 {
     auto fds{SocketPair()};
+    kj::AutoCloseFd fds0_owner{fds[0]}, fds1_owner{fds[1]};
     // Only used for the child to report errors back to the parent, so a one-way
     // pipe would be sufficient, but reuse the existing SocketPair() helper.
     auto error_fds{SocketPair()};
+    kj::AutoCloseFd error_fds0_owner{error_fds[0]}, error_fds1_owner{error_fds[1]};
 
     // Evaluate the callback and build the argv array before forking.
     //
@@ -268,21 +271,17 @@ std::tuple<ProcessId, SocketId> SpawnProcess(SpawnConnectInfoToArgsFn&& connect_
     ProcessId pid = fork();
     if (pid == -1) {
         const int err = errno;
-        (void)close(fds[0]);
-        (void)close(fds[1]);
-        (void)close(error_fds[0]);
-        (void)close(error_fds[1]);
         throw std::system_error(err, std::system_category(), "fork");
     }
+    // The child keeps using the raw descriptors and never runs the
+    // AutoCloseFd destructors, because it only leaves via execvp() or _exit().
+    //
     // Parent process closes the descriptor for socket 0, child closes the
     // descriptor for socket 1. On failure, the parent throws, but the child
     // must _exit(126) (post-fork child must not throw).
-    if (close(fds[pid ? 0 : 1]) != 0) {
+    if (close(pid ? fds0_owner.release() : fds[1]) != 0) {
         const int err = errno;
         if (pid) {
-            (void)close(fds[1]);
-            (void)close(error_fds[0]);
-            (void)close(error_fds[1]);
             KillAndReapChild(pid);
             throw std::system_error(err, std::system_category(), "close");
         }
@@ -321,22 +320,19 @@ std::tuple<ProcessId, SocketId> SpawnProcess(SpawnConnectInfoToArgsFn&& connect_
     }
 
     // Close the parent's copy of the child's write end.
-    if (close(error_fds[0]) != 0) {
+    if (close(error_fds0_owner.release()) != 0) {
         const int err = errno;
-        (void)close(error_fds[1]);
-        (void)close(fds[1]);
         KillAndReapChild(pid);
         throw std::system_error(err, std::system_category(), "close");
     }
 
     const std::optional<SpawnError> error{ReadSpawnResult(error_fds[1])};
-    (void)close(error_fds[1]);
+    (void)close(error_fds1_owner.release());
     if (error) {
-        (void)close(fds[1]);
         KillAndReapChild(pid);
         throw std::system_error(error->err, std::system_category(), SpawnErrorName(error->which));
     }
-    return {pid, fds[1]};
+    return {pid, fds1_owner.release()};
 }
 
 SocketId StartSpawned(const SpawnConnectInfo& connect_info)
@@ -359,16 +355,14 @@ std::array<SocketId, 2> SocketPair()
     int pair[2];
 #ifdef SOCK_CLOEXEC
     KJ_SYSCALL(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair));
+    return {pair[0], pair[1]};
 #else
     KJ_SYSCALL(socketpair(AF_UNIX, SOCK_STREAM, 0, pair));
-    if (fcntl(pair[0], F_SETFD, FD_CLOEXEC) == -1 || fcntl(pair[1], F_SETFD, FD_CLOEXEC) == -1) {
-        const int err = errno;
-        (void)close(pair[0]);
-        (void)close(pair[1]);
-        KJ_FAIL_SYSCALL("fcntl", err);
-    }
+    kj::AutoCloseFd fd0{pair[0]}, fd1{pair[1]};
+    KJ_SYSCALL(fcntl(fd0.get(), F_SETFD, FD_CLOEXEC));
+    KJ_SYSCALL(fcntl(fd1.get(), F_SETFD, FD_CLOEXEC));
+    return {fd0.release(), fd1.release()};
 #endif
-    return {pair[0], pair[1]};
 }
 
 ProcessId StartProcess(const std::vector<std::string>& args)
