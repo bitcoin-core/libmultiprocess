@@ -139,8 +139,25 @@ set_property(DIRECTORY PROPERTY INCLUDE_DIRECTORIES "")
 # Generated C++ preprocessor defines
 configure_file(include/mp/config.h.in "${CMAKE_CURRENT_BINARY_DIR}/include/mp/config.h")
 
-# Generated C++ Capn'Proto schema files
-capnp_generate_cpp(MP_PROXY_SRCS MP_PROXY_HDRS include/mp/proxy.capnp)
+# Generated C++ Capn'Proto schema files. Same as capnp_generate_cpp(), but with
+# the source file as a byproduct so that only the mp_headers target owns the
+# command. CMake 4.5 "install_prep/" targets need installed generated headers
+# to be the output of a single target.
+set(MP_PROXY_SRCS "${CAPNPC_OUTPUT_DIR}/include/mp/proxy.capnp.c++")
+set(MP_PROXY_HDRS "${CAPNPC_OUTPUT_DIR}/include/mp/proxy.capnp.h")
+add_custom_command(
+  OUTPUT ${MP_PROXY_HDRS}
+  BYPRODUCTS ${MP_PROXY_SRCS}
+  COMMAND ${CAPNP_EXECUTABLE} compile
+    -o ${CAPNPC_CXX_EXECUTABLE}:${CAPNPC_OUTPUT_DIR}
+    --src-prefix ${CMAKE_CURRENT_SOURCE_DIR}
+    -I ${CMAKE_CURRENT_SOURCE_DIR}
+    -I ${CAPNP_INCLUDE_DIRECTORY}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/mp/proxy.capnp
+  DEPENDS include/mp/proxy.capnp
+  COMMENT "Compiling Cap'n Proto schema include/mp/proxy.capnp"
+  VERBATIM
+)
 set_source_files_properties("${MP_PROXY_SRCS}" PROPERTIES SKIP_LINTING TRUE) # Ignored before cmake 3.27
 # Build-graph node for generated headers. This lets targets that include
 # the headers order themselves after generation without depending on the
@@ -156,7 +173,6 @@ target_link_libraries(mputil PUBLIC CapnProto::kj)
 
 # libmultiprocess.a runtime library
 set(MP_PUBLIC_HEADERS
-  ${MP_PROXY_HDRS}
   include/mp/proxy-io.h
   include/mp/proxy-types.h
   include/mp/proxy.h
@@ -190,6 +206,8 @@ add_library(multiprocess STATIC
   src/mp/proxy.cpp
   $<TARGET_OBJECTS:mputil>)
 add_library(Libmultiprocess::multiprocess ALIAS multiprocess)
+# MP_PROXY_SRCS are byproducts of mp_headers.
+add_dependencies(multiprocess mp_headers)
 target_include_directories(multiprocess PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -199,7 +217,7 @@ target_link_libraries(multiprocess PUBLIC CapnProto::capnp-rpc)
 target_link_libraries(multiprocess PUBLIC CapnProto::kj)
 target_link_libraries(multiprocess PUBLIC CapnProto::kj-async)
 set_target_properties(multiprocess PROPERTIES
-    PUBLIC_HEADER "${MP_PUBLIC_HEADERS}")
+    PUBLIC_HEADER "${MP_PROXY_HDRS};${MP_PUBLIC_HEADERS}")
 install(TARGETS multiprocess EXPORT LibTargets
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT lib
   PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/mp COMPONENT lib)
