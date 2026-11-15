@@ -23,6 +23,14 @@ check_cxx_source_compiles("
   #include <pthread.h>
   int main()
   {
+    return pthread_setname_np(pthread_self(), \"name\");
+  }"
+  HAVE_PTHREAD_SETNAME_NP_2ARG)
+
+check_cxx_source_compiles("
+  #include <pthread.h>
+  int main()
+  {
     return pthread_setname_np(pthread_self(), \"%s\", (void*)\"name\");
   }"
   HAVE_PTHREAD_SETNAME_NP_3ARG)

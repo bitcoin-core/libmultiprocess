@@ -186,6 +186,8 @@ void SetOsThreadName(const char* name)
     pthread_setname_np(pthread_self(), "%s", const_cast<char*>(name)); // NetBSD
 #elif defined(HAVE_PTHREAD_GETTHREADID_NP)
     pthread_set_name_np(pthread_self(), name); // FreeBSD
+#elif defined(HAVE_PTHREAD_SETNAME_NP_2ARG)
+    pthread_setname_np(pthread_self(), name); // illumos (glibc also has this, but Linux uses PR_SET_NAME above, which truncates long names instead of failing)
 #elif defined(__APPLE__)
     pthread_setname_np(name); // macOS
 #else
