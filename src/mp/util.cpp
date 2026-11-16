@@ -181,13 +181,15 @@ void SetOsThreadName(const char* name)
 {
 #if defined(PR_SET_NAME)
     // Only the first 15 characters are used (16 - NUL terminator)
-    ::prctl(PR_SET_NAME, name, 0, 0, 0);
+    ::prctl(PR_SET_NAME, name, 0, 0, 0); // Linux
 #elif defined(HAVE_PTHREAD_SETNAME_NP_3ARG)
-    pthread_setname_np(pthread_self(), "%s", const_cast<char*>(name));
+    pthread_setname_np(pthread_self(), "%s", const_cast<char*>(name)); // NetBSD
 #elif defined(HAVE_PTHREAD_GETTHREADID_NP)
-    pthread_set_name_np(pthread_self(), name);
+    pthread_set_name_np(pthread_self(), name); // FreeBSD
+#elif defined(HAVE_PTHREAD_SETNAME_NP_2ARG)
+    pthread_setname_np(pthread_self(), name); // illumos (glibc also has this, but Linux uses PR_SET_NAME above, which truncates long names instead of failing)
 #elif defined(__APPLE__)
-    pthread_setname_np(name);
+    pthread_setname_np(name); // macOS
 #else
     // Prevent warnings for unused parameters...
     (void)name;
