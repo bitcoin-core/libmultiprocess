@@ -14,7 +14,9 @@
 #include <condition_variable>
 #include <csignal>
 #include <cstdlib>
+#include <fcntl.h>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -130,6 +132,25 @@ KJ_TEST("SpawnProcess throws on execvp failure")
         KJ_EXPECT(e.code().value() == ENOENT);
         KJ_EXPECT(std::string_view{e.what()}.find("execvp") != std::string_view::npos);
     }
+}
+
+KJ_TEST("SpawnProcess closes the socket passed to the callback when it throws")
+{
+    int callback_fd{-1};
+    try {
+        SpawnProcess([&](SpawnConnectInfo connect_info) -> std::vector<std::string> {
+            callback_fd = std::stoi(connect_info);
+            throw std::runtime_error("callback failed");
+        });
+        KJ_EXPECT(false, "expected SpawnProcess to throw");
+    } catch (const std::runtime_error& e) {
+        KJ_EXPECT(std::string_view{e.what()} == "callback failed", e.what());
+    }
+    KJ_EXPECT(callback_fd >= 0);
+    // The descriptor passed to the callback must have been closed.
+    const int ret{::fcntl(callback_fd, F_GETFD)};
+    const int err{errno};
+    KJ_EXPECT(ret == -1 && err == EBADF, ret, err);
 }
 } // namespace test
 } // namespace mp
