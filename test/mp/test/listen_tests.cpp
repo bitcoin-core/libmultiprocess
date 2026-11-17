@@ -193,6 +193,37 @@ KJ_TEST("ListenConnections enforces a local connection limit")
     KJ_EXPECT(client3->client->add(3, 4) == 7);
 }
 
+KJ_TEST("ListenConnections resumes after a local disconnect")
+{
+    // A connection closed locally with disconnect() must still free the
+    // listener's slot so the listener resumes accepting. The counter decrement
+    // runs as an onDisconnect cleanup, so it runs synchronously on local
+    // disconnects too; if it were in the deferred afterDisconnect handler it
+    // could be handed a null connection or dropped and the slot would stay stuck.
+    ListenSetup server(/*max_connections=*/1);
+
+    auto client1 = std::make_unique<ClientSetup>(server.listener.MakeConnectedSocket());
+    server.WaitForConnectedCount(1);
+    KJ_EXPECT(client1->client->add(1, 2) == 3);
+
+    auto client2 = std::make_unique<ClientSetup>(server.listener.MakeConnectedSocket());
+    (**server.m_loop_ref).sync([] {});
+    KJ_EXPECT(server.ConnectedCount() == 1);
+
+    // Close the first connection locally on the event loop thread. Disconnect
+    // it before dropping the list's reference: under shared ownership, erasing
+    // it from the list alone would not tear it down (see Connection::make).
+    EventLoop& loop{**server.m_loop_ref};
+    loop.sync([&] {
+        KJ_REQUIRE(loop.m_incoming_connections.size() == 1);
+        loop.m_incoming_connections.front()->disconnect();
+        loop.m_incoming_connections.pop_front();
+    });
+
+    server.WaitForConnectedCount(2);
+    KJ_EXPECT(client2->client->add(2, 3) == 5);
+}
+
 KJ_TEST("ListenConnections accepts multiple connections")
 {
     // With max-connections=2, two clients should be accepted and usable at the
