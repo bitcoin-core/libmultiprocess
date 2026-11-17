@@ -50,3 +50,17 @@ It is also possible to import CMake targets separately with:
 find_package(Libmultiprocess COMPONENTS Bin)
 find_package(Libmultiprocess COMPONENTS Lib)
 ```
+
+To uninstall, run the following command from the same build directory:
+
+```sh
+make uninstall
+```
+
+This removes every file listed in the `install_manifest*.txt` files that `make
+install`, `make install-bin`, and `make install-lib` write to the build
+directory. It needs the same permissions as the install step (for example,
+`sudo make uninstall` if `sudo make install` was used), and the same `DESTDIR`
+value if one was used (for example, `make uninstall DESTDIR=/tmp/stage`).
+Directories are not removed, so empty `<prefix>/include/mp` and
+`<prefix>/lib/cmake/Libmultiprocess` directories may be left behind.
