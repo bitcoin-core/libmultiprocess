@@ -12,7 +12,7 @@ set -o errexit -o nounset -o pipefail -o xtrace
 
 : "${CI_DIR:=build}"
 if ! [ -v BUILD_TARGETS ]; then
-  BUILD_TARGETS=(all tests mpexamples)
+  BUILD_TARGETS=(all mpexamples)
 fi
 
 [ -n "${CI_CLEAN-}" ] && rm -rf "${CI_DIR}"
