@@ -39,4 +39,17 @@ if(BUILD_TESTING AND TARGET CapnProto::kj-test)
 
   add_dependencies(mptests mptest)
   add_test(NAME mptest COMMAND mptest)
+
+  # This test overrides clock_gettime() to force CLOCK_MONOTONIC backwards.
+  # Use a separate executable so other tests keep using the system clock.
+  # Linux Cap'n Proto versions before 1.2 throw on these backward readings.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(mpclocktest mp/test/clock_tests.cpp)
+    target_link_libraries(mpclocktest PRIVATE
+      Libmultiprocess::multiprocess CapnProto::kj-test Threads::Threads ${CMAKE_DL_LIBS}
+    )
+    add_dependencies(mptests mpclocktest)
+    add_test(NAME mpclocktest COMMAND mpclocktest)
+    set_tests_properties(mpclocktest PROPERTIES TIMEOUT 30)
+  endif()
 endif()
