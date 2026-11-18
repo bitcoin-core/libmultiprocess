@@ -121,5 +121,16 @@ function(target_capnp_sources target include_prefix)
   # dependencies of generated headers on other generated headers.
   if(NOT TARGET "${target}_headers")
     add_custom_target("${target}_headers" DEPENDS ${generated_headers})
+  else()
+    # target_capnp_sources can be called more than once for the same target,
+    # for example to add optional schemas or schemas with a different include
+    # prefix. The list of files a custom target depends on (its DEPENDS
+    # argument) can't be extended after the target is created, so create a
+    # helper target that depends on these headers, and make ${target}_headers
+    # depend on it with add_dependencies, which can add dependencies between
+    # targets at any time.
+    string(MD5 headers_hash "${CMAKE_CURRENT_SOURCE_DIR};${generated_headers}")
+    add_custom_target(${target}_headers_${headers_hash} DEPENDS ${generated_headers})
+    add_dependencies(${target}_headers ${target}_headers_${headers_hash})
   endif()
 endfunction()
