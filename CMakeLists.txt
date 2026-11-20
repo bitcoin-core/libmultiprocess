@@ -107,7 +107,7 @@ if(MP_ENABLE_IWYU)
   endif()
 endif()
 
-if(MP_ENABLE_CLANG_TIDY OR MP_ENABLE_IWYU)
+if((MP_ENABLE_CLANG_TIDY OR MP_ENABLE_IWYU) AND DEFINED ENV{NIX_CFLAGS_COMPILE})
   # Workaround for nix from https://gitlab.kitware.com/cmake/cmake/-/issues/20912#note_793338
   # Nix injects header paths via $NIX_CFLAGS_COMPILE; CMake tags these as
   # CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES and omits them from the compile
