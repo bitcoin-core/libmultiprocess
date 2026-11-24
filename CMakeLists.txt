@@ -280,6 +280,14 @@ add_custom_target(install-lib
   VERBATIM)
 add_dependencies(install-lib multiprocess)
 
+# Makefile target to support "make uninstall". Only defined for standalone
+# builds, so it does not conflict with an uninstall target in a parent project.
+if(MP_STANDALONE)
+  add_custom_target(uninstall
+    COMMAND ${CMAKE_COMMAND} -DMP_INSTALL_MANIFEST_DIR=${CMAKE_CURRENT_BINARY_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/Uninstall.cmake
+    VERBATIM)
+endif()
+
 # Example and test subdirectories
 add_subdirectory(example EXCLUDE_FROM_ALL)
 add_subdirectory(test EXCLUDE_FROM_ALL)
