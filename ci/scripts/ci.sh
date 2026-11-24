@@ -32,7 +32,7 @@ if [ -n "${CAPNP_CHECKOUT-}" ]; then
     git --no-pager log -1 || true
     CXXFLAGS="-std=c++20" cmake .. "-DCMAKE_INSTALL_PREFIX=${capnp_prefix}" -DBUILD_TESTING=OFF -DWITH_OPENSSL=OFF -DWITH_ZLIB=OFF
     cmake --build .
-    cmake --build . --target install  # Replacement for modern "cmake --install .".
+    cmake --install .
   )
   export CMAKE_PREFIX_PATH="${capnp_prefix}:${CMAKE_PREFIX_PATH-}"
 fi
@@ -47,8 +47,8 @@ if ! cmake "$src_dir" "${cmake_args[@]}"; then
   # If cmake failed, try it again with debug options.
   # Could add --trace / --trace-expand here too but they are very verbose.
   cmake_args+=(--debug-output --debug-trycompile)
-  if ver_ge "$cmake_ver" "3.16"; then cmake_args+=(--log-level=DEBUG); fi
-  if ver_ge "$cmake_ver" "3.17"; then cmake_args+=(--debug-find); fi
+  cmake_args+=(--log-level=DEBUG)
+  cmake_args+=(--debug-find)
   cmake "$src_dir" "${cmake_args[@]}" || : "cmake exited with $?"
   if ver_ge "$cmake_ver" "3.26"; then
     cat CMakeFiles/CMakeConfigureLog.yaml || true
@@ -58,13 +58,5 @@ if ! cmake "$src_dir" "${cmake_args[@]}"; then
   find . -ls || true
   false
 fi
-if ver_ge "$cmake_ver" "3.15"; then
-  cmake --build . -t "${BUILD_TARGETS[@]}" -- "${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}"
-else
-  # Older versions of cmake can only build one target at a time with --target,
-  # and do not support -t shortcut
-  for t in "${BUILD_TARGETS[@]}"; do
-    cmake --build . --target "$t" -- "${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}"
-  done
-fi
+cmake --build . -t "${BUILD_TARGETS[@]}" -- "${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}"
 ctest --output-on-failure
