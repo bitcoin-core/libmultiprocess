@@ -31,9 +31,9 @@
 #include <sys/syscall.h>
 #endif
 
-#ifdef HAVE_PTHREAD_GETTHREADID_NP
+#if defined(HAVE_PTHREAD_GETTHREADID_NP) || defined(HAVE_PTHREAD_SET_NAME_NP) || defined(HAVE_PTHREAD_GET_NAME_NP)
 #include <pthread_np.h>
-#endif // HAVE_PTHREAD_GETTHREADID_NP
+#endif
 
 #if __has_include(<sys/prctl.h>)
 #include <sys/prctl.h>
@@ -184,8 +184,8 @@ void SetOsThreadName(const char* name)
     ::prctl(PR_SET_NAME, name, 0, 0, 0); // Linux
 #elif defined(HAVE_PTHREAD_SETNAME_NP_3ARG)
     pthread_setname_np(pthread_self(), "%s", const_cast<char*>(name)); // NetBSD
-#elif defined(HAVE_PTHREAD_GETTHREADID_NP)
-    pthread_set_name_np(pthread_self(), name); // FreeBSD
+#elif defined(HAVE_PTHREAD_SET_NAME_NP)
+    pthread_set_name_np(pthread_self(), name); // FreeBSD, OpenBSD, DragonFly
 #elif defined(HAVE_PTHREAD_SETNAME_NP_2ARG)
     pthread_setname_np(pthread_self(), name); // illumos (glibc also has this, but Linux uses PR_SET_NAME above, which truncates long names instead of failing)
 #elif defined(__APPLE__)
@@ -199,9 +199,11 @@ void SetOsThreadName(const char* name)
 std::string ThreadName(const char* exe_name)
 {
     char thread_name[16] = {0};
-#ifdef HAVE_PTHREAD_GETNAME_NP
+#if defined(HAVE_PTHREAD_GETNAME_NP)
     pthread_getname_np(pthread_self(), thread_name, sizeof(thread_name));
-#endif // HAVE_PTHREAD_GETNAME_NP
+#elif defined(HAVE_PTHREAD_GET_NAME_NP)
+    pthread_get_name_np(pthread_self(), thread_name, sizeof(thread_name));
+#endif
 
     std::ostringstream buffer;
     buffer << (exe_name ? exe_name : "") << "-" << getpid() << "/";

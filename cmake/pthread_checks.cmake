@@ -54,4 +54,25 @@ check_cxx_source_compiles("
     return pthread_getthreadid_np();
   }"
   HAVE_PTHREAD_GETTHREADID_NP)
+
+check_cxx_source_compiles("
+  #include <pthread.h>
+  #include <pthread_np.h>
+  int main()
+  {
+    pthread_set_name_np(pthread_self(), \"name\");
+    return 0;
+  }"
+  HAVE_PTHREAD_SET_NAME_NP)
+
+check_cxx_source_compiles("
+  #include <pthread.h>
+  #include <pthread_np.h>
+  int main()
+  {
+    char thread_name[16];
+    pthread_get_name_np(pthread_self(), thread_name, sizeof(thread_name));
+    return 0;
+  }"
+  HAVE_PTHREAD_GET_NAME_NP)
 cmake_pop_check_state()
