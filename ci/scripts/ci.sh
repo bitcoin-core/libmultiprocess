@@ -21,7 +21,8 @@ cmake --version
 cmake_ver=$(cmake --version | awk '/version/{print $3; exit}')
 ver_ge() { [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
 
-# If CAPNP_CHECKOUT was requested, clone and install requested Cap'n Proto branch or tag
+# If CAPNP_CHECKOUT was requested, clone and install requested Cap'n Proto branch or tag.
+# CAPNP_CMAKE_ARGS may hold extra CMake options for that build.
 capnp_prefix=
 if [ -n "${CAPNP_CHECKOUT-}" ]; then
   capnp_prefix="$PWD/capnp-install"
@@ -30,7 +31,7 @@ if [ -n "${CAPNP_CHECKOUT-}" ]; then
   (
     cd capnp/build
     git --no-pager log -1 || true
-    CXXFLAGS="-std=c++20" cmake .. "-DCMAKE_INSTALL_PREFIX=${capnp_prefix}" -DBUILD_TESTING=OFF -DWITH_OPENSSL=OFF -DWITH_ZLIB=OFF
+    CXXFLAGS="-std=c++20" cmake .. "-DCMAKE_INSTALL_PREFIX=${capnp_prefix}" -DBUILD_TESTING=OFF -DWITH_OPENSSL=OFF -DWITH_ZLIB=OFF "${CAPNP_CMAKE_ARGS[@]+"${CAPNP_CMAKE_ARGS[@]}"}"
     cmake --build .
     cmake --build . --target install  # Replacement for modern "cmake --install .".
   )
