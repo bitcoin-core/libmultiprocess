@@ -65,6 +65,9 @@ jobs:
             nproc_multiplier: 2
             functional_timeout_factor: 40
             runner: macos-15
+            # Use the minimum Xcode version denoted in Bitcoin Core's
+            # doc/dependencies.md, instead of the runner's default.
+            xcode: '26.3'
             brew-packages: ccache capnp boost sqlite pkgconf ninja
             pip-packages: --break-system-packages pycapnp
             cmake-args: |-
@@ -101,6 +104,16 @@ jobs:
       - name: Configure LLVM alternatives
         if: matrix.packages
         run: _libmultiprocess/ci/scripts/bitcoin_core_ci.sh install_llvm_alternatives
+
+      - name: Select Xcode
+        if: matrix.xcode
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_${{ matrix.xcode }}.app
+          clang --version
+          xcrun --show-sdk-path || true
+          xcrun --show-sdk-version || true
+          printf '#include <version>\nlibcxx=_LIBCPP_VERSION jthread=__cpp_lib_jthread\n' \
+            | clang++ -std=c++20 -E -P -x c++ - | tail -1 || true
 
       - name: Install Homebrew packages
         if: matrix.brew-packages
