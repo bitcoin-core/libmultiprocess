@@ -24,6 +24,7 @@
 #include <mp/type-optional.h>
 #include <mp/type-pointer.h>
 #include <mp/type-set.h>
+#include <mp/type-stop-token.h>
 #include <mp/type-string.h>
 #include <mp/type-struct.h>
 #include <mp/type-threadmap.h>
@@ -112,6 +113,18 @@ inline void CustomPassMessage(InvokeContext&,
     mut.message = std::string{reader.getMessage()} + " pass";
     fn(mut);
     builder.setMessage(mut.message + " return");
+}
+
+inline void CustomBuildExtraParam(TypeList<int>, ClientInvokeContext& invoke_context, int&& value)
+{
+    auto& loop = *invoke_context.connection.m_loop;
+    if (loop.testing_hook_misc) loop.testing_hook_misc(value);
+}
+
+template <typename ServerContext>
+int CustomReadExtraParam(TypeList<int>, ServerContext&)
+{
+    return 1;
 }
 } // namespace mp
 
